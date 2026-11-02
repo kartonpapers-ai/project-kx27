@@ -1,6 +1,6 @@
 # Project KX27: paleta de trapping
 
-Estado: ventana de desarrollo guiada KX27.7, 2026-10-30, sobre el flujo de incorporación de franjas locales revisadas. Se conservan la captura por tintas y el trapping de sólidos, spots, degradados lineales e imágenes opacas. No cambia la calificación alfa del editor.
+Estado: omisiones manuales por análisis KX27.8, 2026-11-02, sobre el flujo de incorporación de franjas locales revisadas. Se conservan la captura por tintas y el trapping de sólidos, spots, degradados lineales e imágenes opacas. No cambia la calificación alfa del editor.
 
 ## Ventana de desarrollo guiada
 
@@ -22,6 +22,20 @@ La ventana comparte capturas y consultas con la paleta. Cambiar el documento, ar
 La prueba de mezcla de coberturas de tintas compartidas queda pendiente. Esta entrega organiza la interfaz; no modifica el motor ni permite reducir la cobertura de una tinta compartida. **Captura por tintas** y **Aplicar a la selección** siguen en la paleta habitual, al cerrar esta ventana; no forman parte del recorrido local nuevo.
 
 Validación: 7 pruebas del recorrido nuevo y 18 de la paleta existente; capturas nativas egui en temas claro/oscuro y tamaños 1280×800, 1024×700 y 700×560; compilación WASM. La ejecución completa de `cargo xtask ci` se detiene en avisos Clippy previos en `render/src/fx.rs` y `pdf/src/import_scan.rs`; no se atribuye un pase global de CI a esta entrega.
+
+## Omitir trapping por decisión del operador
+
+KX27.8, 2026-11-02. En la ventana de desarrollo, elige una **Zona** y un **Par** concreto. En los pasos 2 a 5 aparece **Omitir trapping**, encima de la acción principal. No crea ni elimina objetos, no modifica tintas y no añade un paso a Deshacer. Es una decisión manual: no significa que el programa haya confirmado que ese encuentro no necesita trapping.
+
+El par queda marcado **Omitido · sin franja** y en su lista figura **Omitido**. La franja temporal y la verificación de ese par se descartan y el recorrido vuelve a **Zona y par**; la verificación y la incorporación quedan bloqueadas en esta ventana mientras esté omitido. **Volver a evaluar** retira la omisión y permite verificarlo nuevamente.
+
+**Revisar otro par** selecciona el siguiente par atribuible sin omitir, pasando a otra zona cuando corresponde. Si no hay otro, abre **Diagnóstico**, que enumera las omisiones y ofrece regresar a Zona y par. Los objetos se resaltan a través de `select.set`, sin modificar el arte.
+
+**Alcance inicial: análisis actual, no archivo nativo.** Las decisiones viven en la sesión del panel y el JSON; no se guardan como reglas permanentes en el documento ni bloquean los comandos directos del motor o el Apply antiguo. Cambiar el arte (incluida la incorporación de otra franja), documento, mesa, CMS o ajustes de detección, o detectar nuevamente, descarta estas omisiones. Exporta el diagnóstico antes de esos cambios si necesitas su registro. Cerrar y volver a abrir la ventana conserva las decisiones mientras el análisis siga vigente. Límite: 512 pares omitidos por análisis.
+
+Comandos de interfaz: `trapping.omitPair {omit?:bool}` (true por defecto) actúa sobre la zona/par explícitos y vigentes; false retira la omisión. `trapping.nextDevelopmentPair {}` busca el siguiente par sin omitir. No decide por tintas compartidas. El diagnóstico añade `settings.development.omissions` con estado `omitted`, motivo `operatorDecision`, zona, par, IDs, región y etiquetas; `omissionScope` indica `currentCaptureOnly`. Un informe caducado exporta una lista vacía.
+
+Validación KX27.8: 28 pruebas de interfaz (10 del recorrido y 18 de la paleta), más captura nativa de los estados disponible/omitido/diagnóstico en 1280×800, 1024×700 y 700×560. `cargo check -p vectorcraft-web --target wasm32-unknown-unknown`, formato, assets, brands y layers pasan. La revisión visual independiente dio `ship`; en el tamaño compacto, el mapa requiere desplazamiento del cuerpo para verlo completo. Clippy de la UI no añade avisos a los previos de Pathfinder y miniaturas; `cargo xtask ci` se detiene en avisos existentes de `render/src/fx.rs` y `pdf/src/import_scan.rs`, por lo que no se declara un pase global de CI.
 
 ## Uso
 

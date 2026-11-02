@@ -721,6 +721,18 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "{path?, scope?: selection|all (default selection), …css.selection options} css.export written to path, else a picked file (the web downloads it), with the pictures of rasterized art next to it (CSS Properties panel: Export Selected CSS…, Export All…) → {path, rules, images: [path…]}",
     ),
     (
+        "trapping.omitPair",
+        "Omitir trapping",
+        "",
+        "{omit?: bool (true)} omit or restore the explicitly reviewed zone/pair in the current development capture; no artwork edits; recorded in diagnostic JSON, cleared when the analysis changes",
+    ),
+    (
+        "trapping.nextDevelopmentPair",
+        "Revisar otro par",
+        "",
+        "{} select the next non-omitted attributed pair; if none, open diagnostic; UI review only",
+    ),
+    (
         "trapping.developmentWindow",
         "Trapping · Desarrollo",
         "",
@@ -1428,6 +1440,8 @@ pub fn run_ui_command(app: &mut VectorcraftApp, id: &str, p: &Value) -> Option<R
             }
             Err(e) => Err(e),
         },
+        "trapping.omitPair" => crate::panels::trapping::omit_development_pair(app, p),
+        "trapping.nextDevelopmentPair" => crate::panels::trapping::next_development_pair(app, p),
         "trapping.exportDiagnostic" => crate::panels::trapping::export_diagnostic(app, p),
         // File → Print…: its dialog; with params, print (or save the job as a PDF) without it.
         "file.print" if p.as_object().is_none_or(|o| o.is_empty()) => crate::dialogs::print::open(app),

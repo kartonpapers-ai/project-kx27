@@ -9,7 +9,108 @@ pub(super) struct State {
     pub step: usize,
     pub pair: Option<usize>,
     pub receipt: Option<Receipt>,
+    pub omissions: Vec<Omission>,
 }
+#[derive(Clone, Debug)]
+pub(super) struct Omission {
+    boundary: Weak<BoundaryCapture>,
+    zone: usize,
+    pair: usize,
+}
+fn omitted(settings: &Settings, zone: usize, pair: usize) -> bool {
+    settings
+        .boundaries
+        .as_ref()
+        .is_some_and(|capture| settings.lab.omissions.iter().any(|o| o.zone == zone && o.pair == pair && o.boundary.ptr_eq(&Arc::downgrade(capture))))
+}
+fn current_omitted(settings: &Settings) -> bool {
+    settings.boundary_selected.zip(settings.lab.pair).is_some_and(|(z, p)| omitted(settings, z, p))
+}
+fn current_capture(app: &VectorcraftApp, settings: &Settings) -> Result<Arc<BoundaryCapture>, String> {
+    let c = settings.boundaries.clone().ok_or("Detecta las fronteras y elige un par primero.")?;
+    let artboard = app.session.active_index().and_then(|i| app.views.get(i)).map_or(0, |v| v.artboard);
+    if app.session.active().is_none_or(|st| Some(st.uid) != settings.document || !Arc::ptr_eq(&c.document, &st.doc))
+        || c.colors != vectorcraft_color::cms::active_settings()
+        || c.artboard != artboard
+        || c.dpi != settings.boundary_dpi
+        || c.contrast != settings.boundary_contrast
+    {
+        return Err("El análisis cambió. Detecta las fronteras nuevamente antes de decidir.".into());
+    }
+    Ok(c)
+}
+/// A review decision for this capture only: never changes artwork or undo history.
+pub fn set_omission(app: &mut VectorcraftApp, params: &Value) -> Result<Value, String> {
+    let omit = match params.get("omit") {
+        None => true,
+        Some(Value::Bool(v)) => *v,
+        _ => return Err("omit debe ser verdadero o falso.".into()),
+    };
+    let mut settings = app.ui.trapping.clone();
+    let c = current_capture(app, &settings)?;
+    let zone = settings.boundary_selected.ok_or("Elige una zona.")?;
+    let index = settings.lab.pair.ok_or("Elige un par concreto.")?;
+    let ids = pair(&settings).ok_or("Elige un par válido.")?["ids"].clone();
+    settings.lab.omissions.retain(|o| o.boundary.ptr_eq(&Arc::downgrade(&c)));
+    let was_omitted = omitted(&settings, zone, index);
+    if omit && !was_omitted {
+        if settings.lab.omissions.len() >= 512 {
+            return Err("Este análisis alcanzó 512 omisiones. Exporta su diagnóstico antes de iniciar otro análisis.".into());
+        }
+        settings.lab.omissions.push(Omission { boundary: Arc::downgrade(&c), zone, pair: index });
+    } else if !omit {
+        settings.lab.omissions.retain(|o| o.zone != zone || o.pair != index);
+    }
+    settings.curves = None;
+    settings.preview = None;
+    settings.lab.step = 1;
+    settings.failed = false;
+    settings.export_message.clear();
+    settings.export_failed = false;
+    settings.message = if omit {
+        "Par omitido por decisión del operador. No se creó ninguna franja. Puedes revisar otro par o volver a evaluarlo.".into()
+    } else {
+        "Omisión retirada. Puedes verificar y previsualizar este par nuevamente.".into()
+    };
+    app.ui.trapping = settings;
+    Ok(json!({"status":if omit {"omitted"} else {"pending"},"zone":zone+1,"pair":index+1,"ids":ids,"documentModified":false}))
+}
+pub fn next_pair(app: &mut VectorcraftApp, _params: &Value) -> Result<Value, String> {
+    let mut settings = app.ui.trapping.clone();
+    let c = current_capture(app, &settings)?;
+    let pairs: Vec<_> = c.report["zones"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .flat_map(|(z, zone)| (0..zone["attribution"]["pairs"].as_array().map_or(0, Vec::len)).map(move |p| (z, p)))
+        .collect();
+    let current = settings.boundary_selected.zip(settings.lab.pair);
+    let start = current.and_then(|v| pairs.iter().position(|p| *p == v)).map_or(0, |i| i + 1);
+    let next = pairs.iter().cycle().skip(start).take(pairs.len()).copied().find(|(z, p)| Some((*z, *p)) != current && !omitted(&settings, *z, *p));
+    if let Some((z, p)) = next {
+        select_zone(app, &mut settings, &c, z);
+        select_pair(app, &mut settings, p);
+        settings.lab.step = 1;
+    } else {
+        settings.lab.step = 5;
+        settings.failed = false;
+        settings.message =
+            "No quedan otros pares atribuibles sin omitir en este análisis. Puedes exportar el diagnóstico o volver a Zona y par.".into();
+    }
+    app.ui.trapping = settings;
+    Ok(json!({"next":next.map(|(z,p)|json!({"zone":z+1,"pair":p+1}))}))
+}
+fn decision_action(app: &mut VectorcraftApp, settings: &mut Settings, command: &str, params: Value) {
+    app.ui.trapping = settings.clone();
+    let result = app.run(command, params);
+    *settings = app.ui.trapping.clone();
+    if let Err(e) = result {
+        settings.failed = true;
+        settings.message = e;
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Receipt {
     pub uid: u64,
@@ -48,8 +149,12 @@ fn allowed(settings: &Settings, step: usize) -> bool {
     match step {
         0 | 5 => true,
         1 => settings.boundaries.is_some(),
-        2 => pair(settings).is_some(),
-        3 | 4 => curves_current(settings) && settings.curves.as_ref().is_some_and(|c| c.report["visibleSamples"].as_u64().unwrap_or(0) > 0),
+        2 => pair(settings).is_some() && !current_omitted(settings),
+        3 | 4 => {
+            !current_omitted(settings)
+                && curves_current(settings)
+                && settings.curves.as_ref().is_some_and(|c| c.report["visibleSamples"].as_u64().unwrap_or(0) > 0)
+        }
         _ => false,
     }
 }
@@ -142,6 +247,7 @@ fn show_contents(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings)
     if settings.preview.is_some() && !preview_current(settings) {
         settings.preview = None;
     }
+    settings.lab.omissions.retain(|o| settings.boundaries.as_ref().is_some_and(|c| o.boundary.ptr_eq(&Arc::downgrade(c))));
     settings.lab.step = settings.lab.step.min(5);
     if !allowed(settings, settings.lab.step) {
         settings.lab.step = if settings.boundaries.is_none() {
@@ -180,7 +286,8 @@ fn show_contents(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings)
                 }
             });
     }
-    let body_height = (ui.available_height() - 132.0).max(100.0);
+    let decision_row = pair(settings).is_some() && (1..=4).contains(&settings.lab.step);
+    let body_height = (ui.available_height() - if decision_row { 170.0 } else { 132.0 }).max(100.0);
     ui.horizontal_top(|ui| {
         if !compact {
             ui.allocate_ui_with_layout(egui::vec2(175.0, body_height), egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -335,6 +442,17 @@ fn stage_content(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings,
             }
         }
         5 => {
+            let omissions = omission_reports(settings);
+            if !omissions.is_empty() {
+                ui.strong(format!("{} pares omitidos por decisión del operador", omissions.len()));
+                ui.label("Decisiones de este análisis. No se guardan en el archivo; se descartan al cambiar el arte o detectar nuevamente.");
+                for o in omissions {
+                    ui.label(format!("Zona {} · Par {} · {}", o["zone"], o["pair"], o["objects"].as_str().unwrap_or("")));
+                }
+                if ui.button("Revisar omisiones en Zona y par").clicked() {
+                    settings.lab.step = 1;
+                }
+            }
             if let Some(receipt) = settings.lab.receipt.as_ref() {
                 ui.strong("Franja local incorporada");
                 ui.label(format!("Objeto {} · capa {} · {} mm", receipt.report["id"], receipt.report["layerId"], receipt.report["widthMm"]));
@@ -377,7 +495,18 @@ fn selectors(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings) {
         let selected = settings.lab.pair.map_or_else(|| "Elige un par".into(), |i| format!("Par {}", i + 1));
         egui::ComboBox::from_label("Par").selected_text(selected).width((ui.available_width() - 64.0).clamp(80.0, 600.0)).show_ui(ui, |ui| {
             for (i, p) in pairs.into_iter().flatten().enumerate() {
-                if ui.selectable_label(settings.lab.pair == Some(i), format!("Par {} · {}", i + 1, label_ids(settings, &p["ids"]))).clicked() {
+                if ui
+                    .selectable_label(
+                        settings.lab.pair == Some(i),
+                        format!(
+                            "Par {}{} · {}",
+                            i + 1,
+                            if omitted(settings, settings.boundary_selected.unwrap_or(usize::MAX), i) { " · Omitido" } else { "" },
+                            label_ids(settings, &p["ids"])
+                        ),
+                    )
+                    .clicked()
+                {
                     select_pair(app, settings, i);
                 }
             }
@@ -513,7 +642,18 @@ fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings) {
     let stage = settings.lab.step;
     let checked = curves_current(settings);
     let visible = settings.curves.as_ref().is_some_and(|c| c.report["visibleSamples"].as_u64().unwrap_or(0) > 0);
+    let is_omitted = (1..=4).contains(&stage) && current_omitted(settings);
+    if pair(settings).is_some() && (1..=4).contains(&stage) {
+        ui.horizontal_wrapped(|ui| {
+            let label = if is_omitted { "Volver a evaluar" } else { "Omitir trapping" };
+            if ui.add(egui::Button::new(label).min_size(egui::vec2(140.0, 30.0))).clicked() {
+                decision_action(app, settings, "trapping.omitPair", json!({"omit":!is_omitted}));
+            }
+            ui.label(if is_omitted { "Omitido · sin franja" } else { "Decisión manual para este par y esta zona." });
+        });
+    }
     let label = match stage {
+        _ if is_omitted => "Revisar otro par",
         0 => "Detectar fronteras",
         1 => "Continuar a verificar curvas",
         2 if checked && visible => "Continuar a previsualizar",
@@ -535,6 +675,10 @@ fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings) {
         });
     });
     if !action {
+        return;
+    }
+    if is_omitted {
+        decision_action(app, settings, "trapping.nextDevelopmentPair", json!({}));
         return;
     }
     match stage {
@@ -586,10 +730,27 @@ fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings) {
     }
 }
 
+fn omission_reports(settings: &Settings) -> Vec<Value> {
+    let Some(c) = settings.boundaries.as_ref() else { return Vec::new() };
+    settings
+        .lab
+        .omissions
+        .iter()
+        .filter(|o| o.boundary.ptr_eq(&Arc::downgrade(c)))
+        .filter_map(|o| {
+            let zone = c.report["zones"].as_array()?.get(o.zone)?;
+            let p = zone["attribution"]["pairs"].as_array()?.get(o.pair)?;
+            Some(json!({"status":"omitted","reason":"operatorDecision","zone":o.zone+1,"pair":o.pair+1,
+            "ids":p["ids"],"region":zone["bounds"],"objects":label_ids(settings,&p["ids"])}))
+        })
+        .collect()
+}
 pub(super) fn diagnostic_state(app: &VectorcraftApp, settings: &Settings, current: bool) -> Value {
     json!({"open":settings.development_window,"step":settings.lab.step+1,
         "selectedZone":current.then_some(settings.boundary_selected.map(|i|i+1)).flatten(),
         "selectedPair":current.then_some(settings.lab.pair.map(|i|i+1)).flatten(),
         "ids":if current {pair(settings).map(|p|p["ids"].clone())}else{None},
+        "omissions":if current {omission_reports(settings)} else {Vec::new()},
+        "omissionScope":"currentCaptureOnly",
         "incorporated":if receipt_current(app,settings){settings.lab.receipt.as_ref().map(|r|&r.report)}else{None}})
 }

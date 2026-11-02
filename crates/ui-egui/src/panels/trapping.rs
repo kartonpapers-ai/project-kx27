@@ -11,7 +11,7 @@ use crate::theme::Tokens;
 use crate::{VectorcraftApp, widgets};
 
 mod lab;
-pub use lab::show_window as show_development_window;
+pub use lab::{next_pair as next_development_pair, set_omission as omit_development_pair, show_window as show_development_window};
 
 pub const ID: &str = "trapping";
 const DIRECTIONS: [&str; 3] = ["Claro hacia oscuro", "Invertida", "Centrada"];

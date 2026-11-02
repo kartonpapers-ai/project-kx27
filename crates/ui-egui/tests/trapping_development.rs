@@ -246,3 +246,99 @@ fn development_native_visual_capture() {
     assert!(h.state().ui.trapping.failed);
     h.render().unwrap().save(std::path::Path::new(&dir).join("light-1024x700-error.png")).unwrap();
 }
+
+#[test]
+fn omit_is_read_only_reversible_and_exported_for_the_exact_pair() {
+    let (app, files) = fixture(true, true);
+    let before = app.session.doc().unwrap().doc.clone();
+    let undo = app.session.doc().unwrap().history.undo.len();
+    let mut h = harness(app, 700.0, 560.0, Brightness::Light, false);
+    click(&mut h, "Detectar fronteras");
+    choose_first(&mut h);
+    assert!(h.query_by_label("Omitir trapping").is_none());
+    h.get_by_label("Par").click();
+    h.run_steps(4);
+    h.get_by_label_contains("Par 1 ·").click();
+    h.run_steps(4);
+    footer_visible(&h, "Omitir trapping", 700.0, 560.0);
+    click(&mut h, "Omitir trapping");
+    h.get_by_label("Omitido · sin franja");
+    footer_visible(&h, "Revisar otro par", 700.0, 560.0);
+    assert!(h.query_by_label("Incorporar esta franja").is_none());
+    assert_eq!(h.state().session.doc().unwrap().history.undo.len(), undo);
+    assert!(Arc::ptr_eq(&before, &h.state().session.doc().unwrap().doc));
+    // Omission cannot be bypassed by jumping straight to verification.
+    h.state_mut().run("trapping.omitPair", json!({})).unwrap();
+    click(&mut h, "Revisar otro par");
+    assert!(h.query_by_label("Omitido · sin franja").is_none());
+    h.state_mut().run("trapping.omitPair", json!({})).unwrap();
+    h.run_steps(4);
+    // Return to the original omitted pair and restore it.
+    h.get_by_label("Par").click();
+    h.run_steps(4);
+    h.get_by_label_contains("Par 1 · Omitido").click();
+    h.run_steps(4);
+    click(&mut h, "Volver a evaluar");
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Continuar a verificar curvas");
+    assert!(h.query_by_label("Omitido · sin franja").is_none());
+    h.state_mut().run("trapping.omitPair", json!({})).unwrap();
+    h.run_steps(4);
+    // Use the command so the same assertion works with the compact Paso selector.
+    h.state_mut().run("trapping.developmentWindow", json!({"open":false})).unwrap();
+    h.state_mut().run("trapping.exportDiagnostic", json!({})).unwrap();
+    let d: Value = serde_json::from_slice(&files.borrow()[0]).unwrap();
+    let omissions = d["settings"]["development"]["omissions"].as_array().unwrap();
+    assert_eq!(omissions.len(), 2);
+    assert_eq!(omissions[0]["reason"], "operatorDecision");
+    assert!(omissions.iter().all(|o| o["status"] == "omitted"));
+    assert_eq!(d["selection"]["report"]["localTraps"].as_array().unwrap().len(), 0);
+    assert!(Arc::ptr_eq(&before, &h.state().session.doc().unwrap().doc));
+    assert!(h.state_mut().run("trapping.omitPair", json!({"omit":"yes"})).is_err());
+    h.state_mut().run("shape.rectangle", json!({"x":2,"y":2,"width":2,"height":2})).unwrap();
+    assert!(h.state_mut().run("trapping.omitPair", json!({})).is_err());
+    h.state_mut().run("trapping.exportDiagnostic", json!({})).unwrap();
+    let d: Value = serde_json::from_slice(files.borrow().last().unwrap()).unwrap();
+    assert_eq!(d["settings"]["development"]["omissions"], json!([]));
+}
+#[test]
+fn omitting_a_prepared_pair_clears_preview_and_all_omitted_opens_diagnostic() {
+    let (app, files) = fixture(false, false);
+    let before = app.session.doc().unwrap().doc.clone();
+    let mut h = harness(app, 1024.0, 720.0, Brightness::MediumDark, false);
+    build_preview(&mut h);
+    click(&mut h, "Omitir trapping");
+    assert!(h.query_by_label("Continuar a incorporar").is_none());
+    click(&mut h, "Revisar otro par");
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Exportar diagnóstico (.json)");
+    click(&mut h, "Exportar diagnóstico (.json)");
+    let d: Value = serde_json::from_slice(&files.borrow()[0]).unwrap();
+    assert_eq!(d["settings"]["development"]["step"], 6);
+    assert_eq!(d["settings"]["development"]["omissions"][0]["ids"], json!([2, 3]));
+    assert_eq!(d["analyses"]["preview"]["status"], "notAvailable");
+    assert!(Arc::ptr_eq(&before, &h.state().session.doc().unwrap().doc));
+    click(&mut h, "1. Detectar");
+    click(&mut h, "Detectar fronteras");
+    choose_first(&mut h);
+    h.state_mut().run("trapping.exportDiagnostic", json!({})).unwrap();
+    let d: Value = serde_json::from_slice(files.borrow().last().unwrap()).unwrap();
+    assert_eq!(d["settings"]["development"]["omissions"], json!([]));
+}
+
+#[test]
+fn omission_native_visual_capture() {
+    let Ok(dir) = std::env::var("KX27_OMIT_SCREENSHOTS") else { return };
+    std::fs::create_dir_all(&dir).unwrap();
+    for (w, height, theme) in [(1280.0, 800.0, Brightness::MediumDark), (1024.0, 700.0, Brightness::Light), (700.0, 560.0, Brightness::MediumDark)] {
+        let (app, _) = fixture(true, false);
+        let mut h = harness(app, w, height, theme, true);
+        click(&mut h, "Detectar fronteras");
+        choose_first(&mut h);
+        let prefix = format!("{}-{}x{}", theme.id(), w as u32, height as u32);
+        for (label, action) in [("available", "Omitir trapping"), ("omitted", "Revisar otro par"), ("diagnostic", "")] {
+            h.render().unwrap().save(std::path::Path::new(&dir).join(format!("{prefix}-{label}.png"))).unwrap();
+            if !action.is_empty() {
+                click(&mut h, action);
+            }
+        }
+    }
+}
