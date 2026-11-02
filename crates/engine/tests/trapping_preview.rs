@@ -165,3 +165,81 @@ fn gaps_unsupported_requests_and_budgets_fail_without_partial_geometry() {
     }
     assert!(preview(&mut s, ids, json!([99, 10, 101, 90]), 0.1).is_err());
 }
+
+fn ellipse(s: &mut Session, bounds: Rect, c: Color) -> NodeId {
+    s.edit("Synthetic ellipse", |d, _| {
+        let id = d.alloc_id();
+        let layer = d.default_layer();
+        d.insert(layer, usize::MAX, Node::path(id, shapes::ellipse(bounds), Appearance::basic(Paint::solid(c), Paint::None, 0.0)))?;
+        Ok(id)
+    })
+    .unwrap()
+}
+fn curve_ends(path: &BezPath) -> Vec<Point> {
+    use vectorcraft_geom::PathEl;
+    path.elements()
+        .iter()
+        .filter_map(|el| match el {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) | PathEl::QuadTo(_, p) | PathEl::CurveTo(_, _, p) => Some(*p),
+            _ => None,
+        })
+        .collect()
+}
+#[test]
+fn raster_candidate_halo_and_curve_crossings_reach_both_ellipse_junctions() {
+    use vectorcraft_geom::{ParamCurve, kurbo};
+    let mut s = setup();
+    s.execute("file.new", &json!({"width":260,"height":200})).unwrap();
+    let a = ellipse(&mut s, Rect::new(40.0, 40.0, 160.0, 160.0), Color::cmyk(1.0, 0.0, 0.0, 0.0));
+    let b = ellipse(&mut s, Rect::new(100.0, 40.0, 220.0, 160.0), Color::cmyk(0.0, 0.0, 1.0, 0.0));
+    // Equal translated ellipses meet on x=130. Solve the original cubic against
+    // that line, independently of the preview's recursive curve/curve cutter.
+    let original = shapes::ellipse(Rect::new(40.0, 40.0, 160.0, 160.0)).to_bezpath();
+    let probe = kurbo::Line::new((130.0, 0.0), (130.0, 200.0));
+    let junctions: Vec<_> =
+        original.segments().flat_map(|seg| seg.intersect_line(probe).into_iter().map(move |hit| seg.eval(hit.segment_t))).collect();
+    assert_eq!(junctions.len(), 2);
+    let before = s.doc().unwrap().doc.clone();
+    for dpi in [36.0, 72.0, 150.0] {
+        let map = s.execute("trapping.boundaries", &json!({"dpi":dpi})).unwrap();
+        let z = map["zones"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|z| z["attribution"]["pairs"].as_array().is_some_and(|p| p.iter().any(|p| p["ids"] == json!([a, b]))))
+            .unwrap();
+        for width in [0.01, 0.1, 0.5] {
+            let r = s.execute("trapping.previewLocal", &json!({"ids":[a,b],"region":z["bounds"],"widthMm":width,"zoneDpi":dpi})).unwrap();
+            let curve = band(&r);
+            let ends = curve_ends(&curve);
+            for p in &junctions {
+                let distance = ends.iter().map(|q| q.distance(*p)).fold(f64::INFINITY, f64::min);
+                assert!(distance < 0.003, "junction {p:?} missed by {distance} pt at dpi {dpi}, width {width}; bounds {}", r["bandBounds"]);
+            }
+            assert!(inside(&curve, 100.0 + width * 72.0 / 25.4 * 0.5, 100.0));
+            assert!(!inside(&curve, 100.0 - width * 72.0 / 25.4 * 0.5, 100.0));
+            assert!(!inside(&curve, 100.0 + width * 72.0 / 25.4 * 1.2, 100.0));
+            assert!(r["bandAnchors"].as_u64().unwrap() < 100);
+            assert_eq!(r["endpointMethod"], "boundedCurveIntersections");
+        }
+    }
+    assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+}
+#[test]
+fn curve_junctions_remain_clipped_to_paper_occluders_and_explicit_region_scope() {
+    let mut s = setup();
+    let a = ellipse(&mut s, Rect::new(40.0, 40.0, 160.0, 160.0), Color::cmyk(1.0, 0.0, 0.0, 0.0));
+    let b = ellipse(&mut s, Rect::new(100.0, 40.0, 220.0, 160.0), Color::cmyk(0.0, 0.0, 1.0, 0.0));
+    rect(&mut s, Rect::new(95.0, 90.0, 108.0, 110.0), Color::cmyk(0.0, 1.0, 0.0, 0.0));
+    let r = s.execute("trapping.previewLocal", &json!({"ids":[a,b],"region":[99,48,131,152],"widthMm":0.1,"zoneDpi":72})).unwrap();
+    let curve = band(&r);
+    assert!(!inside(&curve, 100.1, 100.0), "must not spread over a third object");
+    assert!(!inside(&curve, 98.0, 100.0), "must not leave the receiver");
+    assert!(!inside(&curve, 129.9, 47.0), "must not spread over paper at the upper junction");
+    // An explicit crop does not silently become a whole-object trap.
+    let r = preview(&mut s, [a, b], json!([99, 115, 102, 125]), 0.1).unwrap();
+    assert!(r["bandBounds"][3].as_f64().unwrap() < 126.0);
+    for bad in [json!(0), json!(601), json!("72")] {
+        assert!(s.execute("trapping.previewLocal", &json!({"ids":[a,b],"region":[99,48,131,152],"zoneDpi":bad})).is_err());
+    }
+}

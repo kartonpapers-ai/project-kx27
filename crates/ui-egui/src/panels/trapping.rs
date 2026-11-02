@@ -1359,7 +1359,10 @@ fn calculate_preview(app: &mut VectorcraftApp, ui: &Ui, settings: &mut Settings,
 
     settings.preview = None;
     let result = (|| {
-        let mut report = app.run("trapping.previewLocal", json!({"ids":ids,"region":check.report["region"],"widthMm":settings.preview_width_mm}))?;
+        let mut report = app.run(
+            "trapping.previewLocal",
+            json!({"ids":ids,"region":check.report["region"],"widthMm":settings.preview_width_mm,"zoneDpi":check.boundary.dpi}),
+        )?;
         let (texture, overlay) = preview_textures(ui, &report)?;
         if let Some(obj) = report.as_object_mut() {
             obj.remove("dataBase64");

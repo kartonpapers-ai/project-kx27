@@ -7,6 +7,8 @@ use vectorcraft_doc::{Appearance, Document, Node, NodeId};
 use vectorcraft_geom::{BezPath, FillRule, ParamCurve, PathData, PathSeg, Point, Rect, Shape, Vec2, kurbo};
 use vectorcraft_pathops::{BoolOp, try_boolean, try_normalize};
 
+mod endpoints;
+
 const PT_MM: f64 = 72.0 / 25.4;
 const PRECISION: f64 = 0.0001;
 const MAX_GEOMETRY: usize = 4096;
@@ -68,6 +70,8 @@ fn trace(scene: &Scene, ids: [NodeId; 2], region: Rect) -> Result<(Vec<BezPath>,
         .map(|s| s.geometry.path.elements().len() + s.clips.iter().map(|g| g.path.elements().len()).sum::<usize>())
         .sum::<usize>();
     let max_cells = (8_000_000 / cost.max(1).saturating_mul(20)).clamp(1, 8192);
+    let boundaries: Vec<_> = scene.cache.values().flat_map(|g| g.path.segments()).collect();
+    let mut crossing_visits = 0;
     let mut runs = Vec::new();
     let mut tested = 0;
     let mut visits = 0;
@@ -76,9 +80,21 @@ fn trace(scene: &Scene, ids: [NodeId; 2], region: Rect) -> Result<(Vec<BezPath>,
         let mut current = BezPath::new();
         let mut last = None::<Point>;
         for original in g.path.segments() {
-            let mut work = vec![(0.0, 1.0, 0u8)];
+            if !overlaps(original.bounding_box(), region) {
+                continue;
+            }
+            let cuts = endpoints::parameters(original, &boundaries, region, &mut crossing_visits)?;
+            let mut work: Vec<_> = cuts
+                .windows(2)
+                .rev()
+                .filter_map(|w| {
+                    let lo = *w.first()?;
+                    let hi = *w.get(1)?;
+                    (hi - lo > 1e-10).then_some((lo, hi, 0u8, lo, hi))
+                })
+                .collect();
             let mut ranges: Vec<(f64, f64)> = Vec::new();
-            while let Some((lo, hi, depth)) = work.pop() {
+            while let Some((lo, hi, depth, span_lo, span_hi)) = work.pop() {
                 visits += 1;
                 if visits > 60_000 || tested >= max_cells {
                     return Err("La previsualización alcanzó su presupuesto. Elige una zona menor.".into());
@@ -93,12 +109,22 @@ fn trace(scene: &Scene, ids: [NodeId; 2], region: Rect) -> Result<(Vec<BezPath>,
                         return Err("El contorno requiere una zona menor para previsualizarse.".into());
                     }
                     let mid = (lo + hi) * 0.5;
-                    work.push((mid, hi, depth + 1));
-                    work.push((lo, mid, depth + 1));
+                    work.push((mid, hi, depth + 1, span_lo, span_hi));
+                    work.push((lo, mid, depth + 1, span_lo, span_hi));
                     continue;
                 }
                 tested += 1;
-                let accepted = [0.02, 0.25, 0.5, 0.75, 0.98].iter().all(|&t| region.contains(seg.eval(t)) && matches_pair(scene, ids, seg, t));
+                // A terminal cell already ends at a geometric junction. Probe its
+                // interior instead of demanding a two-sided owner across that junction.
+                let first = (lo - span_lo).abs() < 1e-12;
+                let last = (hi - span_hi).abs() < 1e-12;
+                let probes: &[f64] = match (first, last) {
+                    (true, true) => &[0.25, 0.5, 0.75],
+                    (true, false) => &[0.5, 0.75, 0.98],
+                    (false, true) => &[0.02, 0.25, 0.5],
+                    _ => &[0.02, 0.25, 0.5, 0.75, 0.98],
+                };
+                let accepted = probes.iter().all(|&t| region.contains(seg.eval(t)) && matches_pair(scene, ids, seg, t));
                 if accepted {
                     if let Some(previous) = ranges.last_mut().filter(|p| (p.1 - lo).abs() < 1e-12) {
                         previous.1 = hi;
@@ -144,12 +170,22 @@ fn trace(scene: &Scene, ids: [NodeId; 2], region: Rect) -> Result<(Vec<BezPath>,
 /// Ordered IDs define source → receiver. The band is highlighted geometry, not a
 /// prediction of overprint colour. It is clipped to the receiver's visible fill.
 pub fn preview(doc: &Document, ids: [NodeId; 2], region: Rect, width_mm: f64) -> Result<Preview, String> {
+    preview_with_halo(doc, ids, region, width_mm, 0.0)
+}
+
+/// Additional search uncertainty from a raster candidate map, in document points.
+/// Explicit region queries without a map keep their original local scope.
+pub fn preview_with_halo(doc: &Document, ids: [NodeId; 2], region: Rect, width_mm: f64, map_halo: f64) -> Result<Preview, String> {
+    if !map_halo.is_finite() || !(0.0..=4.0).contains(&map_halo) {
+        return Err("El margen del mapa debe ser finito y estar entre 0 y 4 puntos.".into());
+    }
     if !width_mm.is_finite() || !(0.01..=0.5).contains(&width_mm) {
         return Err("El ancho de previsualización debe estar entre 0,01 y 0,50 mm.".into());
     }
     // Validate the requested region before inflating it (a reversed region must fail).
     crate::curves::validate_region(ids, region)?;
-    let region = region.inflate(width_mm * PT_MM + 0.1, width_mm * PT_MM + 0.1);
+    let halo = (width_mm * PT_MM + 0.1).max(map_halo);
+    let region = region.inflate(halo, halo);
     let (scene, known) = local_scene(doc, ids, region)?;
     if scene.surfaces.len() > 32 || scene.elements > 2048 {
         return Err("La previsualización local admite 32 superficies y 1.024 anclas. Revisa una zona menor.".into());

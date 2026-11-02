@@ -1,6 +1,6 @@
 # Project KX27: paleta de trapping
 
-Estado: omisiones manuales por análisis KX27.8, 2026-11-02, sobre el flujo de incorporación de franjas locales revisadas. Se conservan la captura por tintas y el trapping de sólidos, spots, degradados lineales e imágenes opacas. No cambia la calificación alfa del editor.
+Estado: extremos locales de curvas KX27.9, 2026-11-02, sobre el flujo de incorporación de franjas locales revisadas. Se conservan la captura por tintas y el trapping de sólidos, spots, degradados lineales e imágenes opacas. No cambia la calificación alfa del editor.
 
 ## Ventana de desarrollo guiada
 
@@ -22,6 +22,18 @@ La ventana comparte capturas y consultas con la paleta. Cambiar el documento, ar
 La prueba de mezcla de coberturas de tintas compartidas queda pendiente. Esta entrega organiza la interfaz; no modifica el motor ni permite reducir la cobertura de una tinta compartida. **Captura por tintas** y **Aplicar a la selección** siguen en la paleta habitual, al cerrar esta ventana; no forman parte del recorrido local nuevo.
 
 Validación: 7 pruebas del recorrido nuevo y 18 de la paleta existente; capturas nativas egui en temas claro/oscuro y tamaños 1280×800, 1024×700 y 700×560; compilación WASM. La ejecución completa de `cargo xtask ci` se detiene en avisos Clippy previos en `render/src/fx.rs` y `pdf/src/import_scan.rs`; no se atribuye un pase global de CI a esta entrega.
+
+## Extremos de franjas en cruces de curvas
+
+KX27.9, 2026-11-02. La caja de una zona del mapa es una aproximación rasterizada: antes podía cortar el contacto antes del cruce real. La previsualización local recibe ahora `zoneDpi` desde la captura y amplía la búsqueda por el mayor de dos márgenes: ancho nominal más 0,1 puntos, o diagonal de un píxel del detector más 0,05 mm. Sin `zoneDpi`, una consulta con región explícita conserva su margen anterior; no se convierte en trapping del objeto completo.
+
+Los segmentos Bézier originales se separan en sus cruces con los contornos y clips locales y con el límite de búsqueda. La intersección es numérica y acotada, con tolerancia de 0,0001 puntos; las celdas terminales comprueban su interior para no rechazar el extremo por un sondeo al otro lado del cruce. No se unen puntos del mapa rasterizado. Se mantienen el ancho nominal, extremos rectos y el recorte completo al receptor visible, incluidos objetos que lo ocultan y agujeros. Hasta 120.000 visitas de intersección y 8.192 cortes por segmento; superar el presupuesto devuelve un error sin incorporar geometría parcial. No es una demostración continua de contacto ni una prueba RIP; tangencias y coincidencias degeneradas siguen requiriendo revisión.
+
+`trapping.previewLocal` acepta `zoneDpi?:number` entre 36 y 600 ppp. El informe añade `zoneDpi`, `mapHaloPt`, `endpointMethod`, `endpointTolerancePt` y `terminalChecksPerInterval`; `checksPerInterval` es el máximo de sondeos. La incorporación usa la franja revisada, sin cambiar las reglas de tintas compartidas ni las omisiones manuales.
+
+Para repetir una prueba antigua, deshaz o elimina primero su franja incorporada, detecta nuevamente y recorre los pasos 2 a 5. Los traps existentes no se recalculan al abrir la nueva versión. Ajusta el ancho en **Paso 4 · Previsualizar**: el ancho del Apply antiguo es un control separado; el flujo local admite de 0,01 a 0,50 mm.
+
+Validación: ocho pruebas de previsualización, incluidas dos elipses sintéticas a 36/72/150 ppp con anchos 0,01/0,1/0,5 mm, ambos extremos a menos de 0,003 puntos del cruce independiente, ancho geométrico, papel, tercer objeto y región explícita. También pasan ocho pruebas de curvas y siete de incorporación (vigencia, sobreimpresión, PDF, deshacer y rechazo de reducciones de tintas compartidas). En la reconstrucción local del caso privado del operador, el extremo antes corto (unos 0,154 mm) queda a menos de 0,00002 mm del cruce numérico independiente; la incorporación y exportación PDF también terminan. El caso se utiliza solo localmente; no se incorpora al repositorio. También pasan las 28 pruebas de la paleta y el recorrido, formato, assets, brands y layers. WASM compila. La CI global continúa detenida por avisos anteriores de Clippy en `render/src/fx.rs` y `pdf/src/import_scan.rs`; no se declara un pase global.
 
 ## Omitir trapping por decisión del operador
 

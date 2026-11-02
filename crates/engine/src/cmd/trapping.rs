@@ -687,7 +687,7 @@ pub fn specs() -> Vec<CommandSpec> {
             local::incorporate
         ),
         cmd!(query "trapping.previewLocal", "Preview Local Trapping Band", [], None,
-            "{ids:[source,receiver], region:[x0,y0,x1,y1] points, widthMm?:0.01..0.5 (0.1)} → bounded temporary original-curve band and highlighted raster; opaque solid fills and linked spots only; sampled contact gating, visible receiver clipping; no document, history or selection edits and no Apply integration",has_doc,preview_local),
+            "{ids:[source,receiver], region:[x0,y0,x1,y1] points, widthMm?:0.01..0.5 (0.1), zoneDpi?:36..600} → bounded temporary original-curve band and highlighted raster; opaque solid fills and linked spots only; sampled contact gating, visible receiver clipping; no document, history or selection edits and no Apply integration",has_doc,preview_local),
         cmd!(query "trapping.verifyCurves", "Verify Local Original Curves", [], None,
             "{ids:[two distinct source IDs], region:[x0,y0,x1,y1] in points} → {experimental, ids, region, status, testedSamples, visibleSamples, occludedSamples, gapSamples, unresolvedSamples, truncated, fragments, fragmentsTruncated, stepMm, probeMm, localObjects, warnings}; read-only bounded numerical checks of original fill curves and clips, conservative opaque-solid visibility; not a full contact proof, trap decision or trap geometry",has_doc,verify_curves),
         cmd!(query "trapping.boundaries", "Detect Visible Ink Boundary Candidates", [], None,
@@ -865,7 +865,14 @@ fn preview_local(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let doc = &s.doc()?.doc;
     let requested = capture_region(doc, p, C)?;
-    let r = vectorcraft_render::trap_preview::preview(doc, ids, requested, width).map_err(|e| bad(C, e))?;
+    let zone_dpi = match p.get("zoneDpi") {
+        None => None,
+        Some(v) => {
+            Some(v.as_f64().filter(|d| d.is_finite() && (36.0..=600.0).contains(d)).ok_or_else(|| bad(C, "zoneDpi debe estar entre 36 y 600 ppp."))?)
+        }
+    };
+    let map_halo = zone_dpi.map_or(0.0, |dpi| std::f64::consts::SQRT_2 * 72.0 / dpi + 0.05 * 72.0 / 25.4);
+    let r = vectorcraft_render::trap_preview::preview_with_halo(doc, ids, requested, width, map_halo).map_err(|e| bad(C, e))?;
     let paint = doc
         .node(ids[0])
         .and_then(|n| {
@@ -885,10 +892,11 @@ fn preview_local(s: &mut Session, p: &Value) -> Result<Value> {
         "overlayBase64":vectorcraft_format::base64_encode(&r.overlay.to_png().map_err(|e|bad(C,e))?),
         "bandPath":r.band.to_bezpath().to_svg(),"bandBounds":[b.x0,b.y0,b.x1,b.y1],
         "bandAnchors":r.band.subpaths.iter().map(|s|s.anchors.len()).sum::<usize>(),
-        "originalCurveRuns":r.runs.len(),"testedIntervals":r.tested,"checksPerInterval":5,
+        "originalCurveRuns":r.runs.len(),"testedIntervals":r.tested,"checksPerInterval":5,"terminalChecksPerInterval":3,
+        "zoneDpi":zone_dpi,"mapHaloPt":map_halo,"endpointTolerancePt":0.0001,"endpointMethod":"boundedCurveIntersections",
         "localObjects":r.local_objects,"sourcePaint":paint.clone(),"plannedOverprint":true,
         "warnings":["Previsualización temporal; no crea objetos ni sustituye Aplicar a la selección.",
-        "Tramos de curvas originales comprobados por cinco sondeos por intervalo de hasta 0,05 mm. No prueba contacto continuo; puede omitir extremos o detalles entre sondeos.",
+        "Tramos originales separados en cruces geométricos locales y comprobados por hasta cinco sondeos por intervalo de hasta 0,05 mm; celdas terminales con sondeos interiores. Tolerancia de cruce 0,0001 puntos. No es una prueba continua de contacto; tangencias o detalles inciertos pueden omitirse.",
         "Franja de ancho nominal, uniones redondas y extremos rectos, recortada al receptor visible. En esquinas, extremos y zonas estrechas el área resultante depende del recorte.",
         "El resaltado indica geometría, no el color de sobreimpresión. Imágenes, degradados, máscaras y otras composiciones bloquean su caja; no es una prueba RIP.",
         "La región limita los tramos analizados; sus extremos de corte no son extremos completos del contacto. Hasta 32 superficies, 1.024 anclas de entrada y 4.096 anclas de salida."]});

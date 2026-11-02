@@ -1,6 +1,6 @@
 > Fork de VectorCraft. Nombre en clave y alcance: [Project KX27](docs/project-kx27.md).
 
-> Project KX27 · 2026-11-02 (KX27.8): the development workflow can omit an explicitly selected zone/pair without editing artwork, restore it for review, and select the next non-omitted pair. Current-capture decisions are visible in the pair selector and JSON diagnostic; changing the analysis clears them. Shared-ink rules remain on hold and upstream parity scores are unchanged. See [operator omissions](docs/trapcolor-trapping.md#omitir-trapping-por-decisión-del-operador).
+> Project KX27 · 2026-11-02 (KX27.9): local trapping previews use detector-resolution margins and bounded original-curve intersections to retain contact endpoints. Visible-receiver clipping, explicit region scope and manual omissions remain in place. Shared-ink rules stay on hold; upstream parity scores are unchanged. See [curve endpoints](docs/trapcolor-trapping.md#extremos-de-franjas-en-cruces-de-curvas).
 
 > Project KX27 · 2026-10-30 (KX27.7): a large modeless development window orders detection, zone/pair selection, curve verification, preview, incorporation and JSON diagnostics. Explicit pair context and a persistent primary action replace the long palette sequence for this workflow; original palette actions remain available after closing it. Shared caches, freshness guards and ink algorithms are unchanged; the shared-ink trial remains pending. Upstream parity scores are unchanged. See [guided development window](docs/trapcolor-trapping.md#ventana-de-desarrollo-guiada).
 
