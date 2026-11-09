@@ -10,6 +10,20 @@ pub(super) struct State {
     pub pair: Option<usize>,
     pub receipt: Option<Receipt>,
     pub omissions: Vec<Omission>,
+    pub review_region: Option<[f64; 4]>,
+    drawing_scope: bool,
+    scope_start: Option<egui::Pos2>,
+}
+impl State {
+    fn cancel_scope(&mut self) {
+        self.drawing_scope = false;
+        self.scope_start = None;
+    }
+
+    pub(super) fn clear_scope(&mut self) {
+        self.cancel_scope();
+        self.review_region = None;
+    }
 }
 #[derive(Clone, Debug)]
 pub(super) struct Omission {
@@ -175,6 +189,7 @@ fn select_zone(app: &mut VectorcraftApp, settings: &mut Settings, c: &Arc<Bounda
     settings.lab.pair = pairs.filter(|p| p.len() == 1).map(|_| 0);
 }
 fn select_pair(app: &mut VectorcraftApp, settings: &mut Settings, index: usize) {
+    settings.lab.clear_scope();
     settings.lab.pair = Some(index);
     settings.curves = None;
     settings.preview = None;
@@ -205,6 +220,9 @@ fn context(ui: &mut Ui, settings: &Settings) {
         ui.strong(format!("Zona {} · {number}", index + 1));
         if let Some(p) = pair(settings) {
             ui.label(label_ids(settings, &p["ids"]));
+        }
+        if let Some(region) = settings.lab.review_region {
+            ui.label(scope_size(region));
         }
     }
 }
@@ -257,6 +275,9 @@ fn refresh(app: &mut VectorcraftApp, ui: &Ui, settings: &mut Settings) {
         } else {
             2
         };
+    }
+    if settings.lab.step != 1 {
+        settings.lab.cancel_scope();
     }
 }
 
@@ -477,6 +498,7 @@ fn stage_content(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings,
         1 => {
             ui.label("Elige una zona y después el par concreto que vas a revisar.");
             selectors(app, ui, settings);
+            scope_controls(ui, settings);
             boundary_map(app, ui, settings, (height - 180.0).max(100.0), true);
         }
         2 => {
@@ -489,7 +511,11 @@ fn stage_content(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings,
                     c.report["visibleSamples"], c.report["unresolvedSamples"], c.report["gapSamples"]
                 ));
                 if c.report["visibleSamples"].as_u64().unwrap_or(0) == 0 {
-                    ui.label("No se verificó una frontera visible. Elige otro par o revisa los ajustes antes de continuar.");
+                    ui.label(if c.scoped {
+                        "No se verificó un contacto en el recuadro. Vuelve a Zona y par y dibuja uno que abarque ambos lados del borde."
+                    } else {
+                        "No se verificó una frontera visible. Elige otro par o revisa los ajustes antes de continuar."
+                    });
                 }
                 if c.report["status"] == "incomplete" {
                     ui.label("Verificación incompleta. Revisa sus muestras y límites antes de continuar.");
@@ -634,6 +660,55 @@ fn direction(ui: &mut Ui, settings: &Settings) {
         ui.label(format!("Receptor: {}", name(1 - source)));
     }
 }
+
+fn scope_size([x0, y0, x1, y1]: [f64; 4]) -> String {
+    format!("Área acotada: {:.1} × {:.1} mm", (x1 - x0) * 25.4 / 72.0, (y1 - y0) * 25.4 / 72.0)
+}
+
+fn scope_controls(ui: &mut Ui, settings: &mut Settings) {
+    if pair(settings).is_none() || current_omitted(settings) {
+        settings.lab.cancel_scope();
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        let drawing = settings.lab.drawing_scope;
+        let label = if drawing { "Cancelar recuadro" } else { "Acotar zona" };
+        if ui.button(label).clicked() || (drawing && ui.input(|i| i.key_pressed(egui::Key::Escape))) {
+            settings.lab.cancel_scope();
+            settings.lab.drawing_scope = !drawing;
+        }
+        if settings.lab.review_region.is_some() && ui.button("Usar zona completa").clicked() {
+            settings.lab.clear_scope();
+            scope_changed(settings, "Se usará la zona completa.");
+        }
+    });
+    if settings.lab.drawing_scope {
+        ui.label("Arrastra un recuadro en el mapa sobre el contacto entre las dos tintas.");
+    } else if let Some(region) = settings.lab.review_region {
+        ui.label(scope_size(region));
+    }
+}
+
+fn scope_changed(settings: &mut Settings, message: &str) {
+    settings.curves = None;
+    settings.preview = None;
+    settings.failed = false;
+    settings.export_failed = false;
+    settings.export_message.clear();
+    settings.message = message.into();
+}
+
+fn map_bounds(value: &Value) -> Option<[f64; 4]> {
+    let rect = [value[0].as_f64()?, value[1].as_f64()?, value[2].as_f64()?, value[3].as_f64()?];
+    (rect[2] > rect[0] && rect[3] > rect[1]).then_some(rect)
+}
+
+fn map_region(map: egui::Rect, selection: egui::Rect, [x0, y0, x1, y1]: [f64; 4]) -> [f64; 4] {
+    let x = |p| x0 + (x1 - x0) * f64::from((p - map.left()) / map.width());
+    let y = |p| y0 + (y1 - y0) * f64::from((p - map.top()) / map.height());
+    [x(selection.left()), y(selection.top()), x(selection.right()), y(selection.bottom())]
+}
+
 fn boundary_map(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, height: f32, picking: bool) {
     let Some(c) = settings.boundaries.clone() else { return };
     ui.horizontal_wrapped(|ui| {
@@ -646,8 +721,11 @@ fn boundary_map(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, 
     let pixels = egui::vec2(c.texture.size()[0] as f32, c.texture.size()[1] as f32);
     let scale = (ui.available_width() / pixels.x.max(1.0)).min(height / pixels.y.max(1.0)) * settings.boundary_zoom;
     egui::ScrollArea::both().id_salt("lab-boundary-map").max_height(height).show(ui, |ui| {
-        let response = ui.add(egui::Image::new((c.texture.id(), pixels * scale)).alt_text("Mapa de zonas y curvas").sense(egui::Sense::click()));
+        let drawing = picking && settings.lab.drawing_scope;
+        let sense = if drawing { egui::Sense::drag() } else { egui::Sense::click() };
+        let response = ui.add(egui::Image::new((c.texture.id(), pixels * scale)).alt_text("Mapa de zonas y curvas").sense(sense));
         if picking
+            && !drawing
             && response.clicked()
             && let Some(pos) = response.interact_pointer_pos()
         {
@@ -663,16 +741,13 @@ fn boundary_map(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, 
         if settings.boundary_show {
             ui.painter().image(c.overlay.id(), response.rect, uv, egui::Color32::WHITE);
         }
-        let r = &c.report["region"];
-        if let (Some(x0), Some(y0), Some(x1), Some(y1)) = (r[0].as_f64(), r[1].as_f64(), r[2].as_f64(), r[3].as_f64())
-            && x1 > x0
-            && y1 > y0
-        {
+        if let Some(bounds @ [x0, y0, x1, y1]) = map_bounds(&c.report["region"]) {
             let point = |x: f64, y: f64| {
                 response.rect.min
                     + egui::vec2(((x - x0) / (x1 - x0)) as f32 * response.rect.width(), ((y - y0) / (y1 - y0)) as f32 * response.rect.height())
             };
             let t = Tokens::get(ui.ctx());
+            let zone = settings.boundary_selected.and_then(|i| c.report["zones"].as_array()?.get(i)).and_then(|z| map_bounds(&z["bounds"]));
             if curves_current(settings)
                 && let Some(check) = settings.curves.as_ref()
             {
@@ -685,15 +760,43 @@ fn boundary_map(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, 
                     ui.painter().circle_filled(p, 1.25, t.axis_y);
                 }
             }
-            if let Some(z) = settings.boundary_selected.and_then(|i| c.report["zones"].as_array()?.get(i)) {
-                let b = &z["bounds"];
-                if let (Some(a), Some(b), Some(c), Some(d)) = (b[0].as_f64(), b[1].as_f64(), b[2].as_f64(), b[3].as_f64()) {
-                    ui.painter().rect_stroke(
-                        egui::Rect::from_min_max(point(a, b), point(c, d)),
-                        0.0,
-                        egui::Stroke::new(2.0, t.accent),
-                        egui::StrokeKind::Inside,
-                    );
+            let rect = |[a, b, c, d]: [f64; 4]| egui::Rect::from_min_max(point(a, b), point(c, d));
+            if let Some(z) = zone {
+                ui.painter().rect_stroke(rect(z), 0.0, egui::Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+            }
+            let outline = |r| {
+                ui.painter().rect_stroke(r, 0.0, egui::Stroke::new(3.0, egui::Color32::BLACK), egui::StrokeKind::Inside);
+                ui.painter().rect_stroke(r, 0.0, egui::Stroke::new(1.5, egui::Color32::WHITE), egui::StrokeKind::Inside);
+            };
+            if let Some(region) = settings.lab.review_region {
+                outline(rect(region));
+            }
+            if drawing {
+                if response.hovered() || response.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                }
+                if response.drag_started() {
+                    settings.lab.scope_start = ui.input(|i| i.pointer.press_origin());
+                }
+                if let (Some(start), Some(end)) = (settings.lab.scope_start, response.interact_pointer_pos()) {
+                    let visible = response.rect.intersect(ui.clip_rect());
+                    let draft = egui::Rect::from_two_pos(start, end).intersect(visible);
+                    if draft.is_positive() {
+                        outline(draft);
+                    }
+                    if response.drag_stopped() {
+                        settings.lab.scope_start = None;
+                        let region = map_region(response.rect, draft, bounds);
+                        let [a, b, c, d] = region;
+                        if draft.width() >= 3.0 && draft.height() >= 3.0 && zone.is_some_and(|[x, y, r, s]| a < r && c > x && b < s && d > y) {
+                            settings.lab.review_region = Some(region);
+                            settings.lab.cancel_scope();
+                            scope_changed(settings, "Recuadro listo. Verifica las curvas de este tramo.");
+                        } else {
+                            settings.failed = true;
+                            settings.message = "Dibuja un recuadro que cruce la zona elegida y abarque ambos lados del contacto.".into();
+                        }
+                    }
                 }
             }
         }
@@ -763,7 +866,7 @@ fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, docked
         _ if docked => "Descargar diagnóstico (.json)",
         _ => "Exportar diagnóstico (.json)",
     };
-    let enabled = app.session.active().is_some() && (stage != 1 || pair(settings).is_some());
+    let enabled = app.session.active().is_some() && (stage != 1 || (pair(settings).is_some() && !settings.lab.drawing_scope));
     let mut action = false;
     if docked || ui.available_width() < 360.0 {
         let width = ui.available_width();
@@ -809,7 +912,7 @@ fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, docked
         2 if checked && visible => settings.lab.step = 3,
         2 => {
             if let (Some(c), Some(z), Some(p)) = (settings.boundaries.clone(), settings.boundary_selected, settings.lab.pair) {
-                verify_pair(app, settings, &c, z, p);
+                verify_pair(app, settings, &c, z, p, true);
             }
         }
         3 if preview_current(settings) => settings.lab.step = 4,
@@ -865,6 +968,7 @@ pub(super) fn diagnostic_state(app: &VectorcraftApp, settings: &Settings, curren
         "selectedZone":current.then_some(settings.boundary_selected.map(|i|i+1)).flatten(),
         "selectedPair":current.then_some(settings.lab.pair.map(|i|i+1)).flatten(),
         "ids":if current {pair(settings).map(|p|p["ids"].clone())}else{None},
+        "reviewRegion":if current {settings.lab.review_region}else{None},
         "omissions":if current {omission_reports(settings)} else {Vec::new()},
         "omissionScope":"currentCaptureOnly",
         "incorporated":if receipt_current(app,settings){settings.lab.receipt.as_ref().map(|r|&r.report)}else{None}})

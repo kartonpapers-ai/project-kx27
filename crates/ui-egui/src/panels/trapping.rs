@@ -67,6 +67,7 @@ struct CurveCheck {
     boundary: Arc<BoundaryCapture>,
     zone: usize,
     pair: usize,
+    scoped: bool,
     report: Value,
 }
 
@@ -800,6 +801,7 @@ fn choose_zone(app: &mut VectorcraftApp, settings: &mut Settings, c: &BoundaryCa
     };
     settings.boundary_selected = Some(index);
     settings.lab.pair = None;
+    settings.lab.clear_scope();
     settings.curves = None;
     settings.preview = None;
     let ids: std::collections::BTreeSet<_> = zone["attribution"]["pairs"]
@@ -1001,7 +1003,7 @@ fn boundary_section(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settin
                                 }
                             }
                             if ui.button(format!("Verificar curvas del par {}", pair_index + 1)).clicked() {
-                                verify_pair(app, settings, &c, index, pair_index);
+                                verify_pair(app, settings, &c, index, pair_index, false);
                             }
                         }
                     });
@@ -1275,6 +1277,7 @@ fn invalidate_boundaries(app: &VectorcraftApp, settings: &mut Settings) {
     });
     if stale {
         settings.boundaries = None;
+        settings.lab.clear_scope();
         settings.curves = None;
         settings.preview = None;
         settings.boundary_selected = None;
@@ -1286,6 +1289,7 @@ fn detect_boundaries(app: &mut VectorcraftApp, ui: &Ui, settings: &mut Settings)
     let artboard = app.session.active_index().and_then(|i| app.views.get(i)).map_or(0, |v| v.artboard);
 
     settings.boundaries = None;
+    settings.lab.clear_scope();
     settings.curves = None;
     settings.preview = None;
     settings.boundary_selected = None;
@@ -1334,15 +1338,19 @@ fn detect_boundaries(app: &mut VectorcraftApp, ui: &Ui, settings: &mut Settings)
         }
     }
 }
-fn verify_pair(app: &mut VectorcraftApp, settings: &mut Settings, c: &Arc<BoundaryCapture>, zone: usize, pair: usize) {
+fn verify_pair(app: &mut VectorcraftApp, settings: &mut Settings, c: &Arc<BoundaryCapture>, zone: usize, pair: usize, scoped: bool) {
     let Some(z) = c.report["zones"].as_array().and_then(|v| v.get(zone)) else { return };
     let Some(p) = z["attribution"]["pairs"].as_array().and_then(|v| v.get(pair)) else { return };
     settings.lab.pair = Some(pair);
     settings.curves = None;
     settings.preview = None;
-    match app.run("trapping.verifyCurves", json!({"ids":p["ids"],"region":z["bounds"]})) {
+    if !scoped {
+        settings.lab.clear_scope();
+    }
+    let region = settings.lab.review_region.map_or_else(|| z["bounds"].clone(), |rect| json!(rect));
+    match app.run("trapping.verifyCurves", json!({"ids":p["ids"],"region":region})) {
         Ok(report) => {
-            settings.curves = Some(Arc::new(CurveCheck { boundary: c.clone(), zone, pair, report }));
+            settings.curves = Some(Arc::new(CurveCheck { boundary: c.clone(), zone, pair, scoped: settings.lab.review_region.is_some(), report }));
             settings.failed = false;
             settings.message = "Curvas comprobadas por muestreo. El documento no se modificó.".into();
         }
@@ -1362,7 +1370,8 @@ fn calculate_preview(app: &mut VectorcraftApp, ui: &Ui, settings: &mut Settings,
     let result = (|| {
         let mut report = app.run(
             "trapping.previewLocal",
-            json!({"ids":ids,"region":check.report["region"],"widthMm":settings.preview_width_mm,"zoneDpi":check.boundary.dpi}),
+            json!({"ids":ids,"region":check.report["region"],"widthMm":settings.preview_width_mm,"zoneDpi":check.boundary.dpi,
+                "clipToRegion":check.scoped}),
         )?;
         let (texture, overlay) = preview_textures(ui, &report)?;
         if let Some(obj) = report.as_object_mut() {
@@ -1392,12 +1401,16 @@ fn calculate_preview(app: &mut VectorcraftApp, ui: &Ui, settings: &mut Settings,
 }
 fn incorporate_preview(app: &mut VectorcraftApp, ui: &Ui, settings: &mut Settings, preview: &LocalPreview) {
     match app.run("trapping.incorporateLocal", json!({"previewId":preview.report["previewId"]})) {
-        Ok(report) => {
+        Ok(mut report) => {
+            if preview.check.scoped {
+                report["reviewRegion"] = preview.report["requestedRegion"].clone();
+            }
             settings.lab.receipt = app.session.active().map(|st| lab::Receipt { uid: st.uid, document: Arc::downgrade(&st.doc), report });
             settings.lab.step = 5;
             settings.preview = None;
             settings.curves = None;
             settings.boundaries = None;
+            settings.lab.clear_scope();
             settings.boundary_selected = None;
             settings.analysis = None;
             clear_capture(ui, settings);

@@ -139,6 +139,48 @@ fn ordered_development_flow_preserves_art_until_explicit_incorporation_and_expor
     assert!(h.query_by_label("Franja local incorporada").is_none());
 }
 #[test]
+fn drawing_a_review_box_limits_the_preview_and_is_recorded_after_incorporation() {
+    let (app, files) = fixture(false, false);
+    let before = app.session.doc().unwrap().doc.clone();
+    let mut h = harness(app, 1024.0, 800.0, Brightness::MediumDark, false);
+    click(&mut h, "Detectar fronteras");
+    choose_first(&mut h);
+    click(&mut h, "Acotar zona");
+    let map = h.get_by_label("Mapa de zonas y curvas").accesskit_node().bounding_box().unwrap();
+    let pos = |x: f64, y: f64| egui::pos2((map.x0 + (map.x1 - map.x0) * x / 200.) as f32, (map.y0 + (map.y1 - map.y0) * y / 150.) as f32);
+    let (start, end) = (pos(40., 26.), pos(57., 34.));
+    h.hover_at(start);
+    h.drag_at(start);
+    h.run_steps(3);
+    h.hover_at(end);
+    h.run_steps(3);
+    h.drop_at(end);
+    h.run_steps(4);
+    h.get_by_label("Usar zona completa");
+    click(&mut h, "Continuar a verificar curvas");
+    click(&mut h, "Verificar curvas");
+    click(&mut h, "Continuar a previsualizar");
+    click(&mut h, "Previsualizar franja");
+    assert!(!h.state().ui.trapping.failed, "{}", h.state().ui.trapping.message);
+    assert!(Arc::ptr_eq(&before, &h.state().session.doc().unwrap().doc));
+    h.state_mut().run("trapping.exportDiagnostic", json!({})).unwrap();
+    let report: Value = serde_json::from_slice(&files.borrow()[0]).unwrap();
+    let region = &report["settings"]["development"]["reviewRegion"];
+    for (actual, expected) in region.as_array().unwrap().iter().zip([40., 26., 57., 34.]) {
+        assert!((actual.as_f64().unwrap() - expected).abs() < 0.75, "{region}");
+    }
+    assert_eq!(report["analyses"]["curves"]["report"]["region"], *region);
+    assert_eq!(report["analyses"]["preview"]["report"]["region"], *region);
+    click(&mut h, "Continuar a incorporar");
+    click(&mut h, "Incorporar esta franja");
+    h.get_by_label("Franja local incorporada");
+    click(&mut h, "Exportar diagnóstico (.json)");
+    let added: Value = serde_json::from_slice(&files.borrow()[1]).unwrap();
+    assert_eq!(added["settings"]["development"]["incorporated"]["reviewRegion"], *region);
+    assert_eq!(added["selection"]["report"]["localTraps"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn changed_direction_and_document_invalidate_only_the_required_steps() {
     let (app, files) = fixture(false, false);
     let mut h = harness(app, 1024.0, 720.0, Brightness::MediumDark, false);

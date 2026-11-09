@@ -687,7 +687,7 @@ pub fn specs() -> Vec<CommandSpec> {
             local::incorporate
         ),
         cmd!(query "trapping.previewLocal", "Preview Local Trapping Band", [], None,
-            "{ids:[source,receiver], region:[x0,y0,x1,y1] points, widthMm?:0.01..0.5 (0.1), zoneDpi?:36..600} → bounded temporary original-curve band and highlighted raster; opaque solid fills and linked spots only; sampled contact gating, visible receiver clipping; no document, history or selection edits and no Apply integration",has_doc,preview_local),
+            "{ids:[source,receiver], region:[x0,y0,x1,y1] points, widthMm?:0.01..0.5 (0.1), zoneDpi?:36..600, clipToRegion?:bool (false)} → bounded temporary original-curve band and highlighted raster; opaque solid fills and linked spots only; sampled contact gating, visible receiver clipping; clipToRegion confines the band to a manually selected region; no document, history or selection edits and no Apply integration",has_doc,preview_local),
         cmd!(query "trapping.verifyCurves", "Verify Local Original Curves", [], None,
             "{ids:[two distinct source IDs], region:[x0,y0,x1,y1] in points} → {experimental, ids, region, status, testedSamples, visibleSamples, occludedSamples, gapSamples, unresolvedSamples, truncated, fragments, fragmentsTruncated, stepMm, probeMm, localObjects, warnings}; read-only bounded numerical checks of original fill curves and clips, conservative opaque-solid visibility; not a full contact proof, trap decision or trap geometry",has_doc,verify_curves),
         cmd!(query "trapping.boundaries", "Detect Visible Ink Boundary Candidates", [], None,
@@ -871,8 +871,18 @@ fn preview_local(s: &mut Session, p: &Value) -> Result<Value> {
             Some(v.as_f64().filter(|d| d.is_finite() && (36.0..=600.0).contains(d)).ok_or_else(|| bad(C, "zoneDpi debe estar entre 36 y 600 ppp."))?)
         }
     };
+    let exact = match p.get("clipToRegion") {
+        None => false,
+        Some(v) => v.as_bool().ok_or_else(|| bad(C, "clipToRegion debe ser verdadero o falso."))?,
+    };
+    let zone_dpi = if exact { None } else { zone_dpi };
     let map_halo = zone_dpi.map_or(0.0, |dpi| std::f64::consts::SQRT_2 * 72.0 / dpi + 0.05 * 72.0 / 25.4);
-    let r = vectorcraft_render::trap_preview::preview_with_halo(doc, ids, requested, width, map_halo).map_err(|e| bad(C, e))?;
+    let r = if exact {
+        vectorcraft_render::trap_preview::preview_in_region(doc, ids, requested, width)
+    } else {
+        vectorcraft_render::trap_preview::preview_with_halo(doc, ids, requested, width, map_halo)
+    }
+    .map_err(|e| bad(C, e))?;
     let paint = doc
         .node(ids[0])
         .and_then(|n| {
@@ -885,7 +895,7 @@ fn preview_local(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| bad(C, "No se pudo leer la tinta de origen."))?;
     let b = r.band.to_bezpath().bounding_box();
     let mut report = json!({"experimental":true,"status":"previewOnly","ids":ids,"widthMm":width,
-        "requestedRegion":[requested.x0,requested.y0,requested.x1,requested.y1],
+        "requestedRegion":[requested.x0,requested.y0,requested.x1,requested.y1],"clipToRegion":exact,
         "region":[r.region.x0,r.region.y0,r.region.x1,r.region.y1],"dpi":r.dpi,
         "width":r.base.width,"height":r.base.height,
         "dataBase64":vectorcraft_format::base64_encode(&r.base.to_png().map_err(|e|bad(C,e))?),

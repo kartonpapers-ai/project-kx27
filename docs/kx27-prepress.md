@@ -1,6 +1,6 @@
 # KX27 Preprensa
 
-KX27.11 · 2026-11-09 · recorrido guiado en el panel de Trapping. El flujo se integra en la aplicación Rust/egui existente, con el mismo motor de PDF, separaciones y trapping. No hay un segundo motor ni un servidor de archivos.
+KX27.12 · 2026-11-09 · revisión e incorporación dentro de un recuadro opcional. El flujo se integra en la aplicación Rust/egui existente, con el mismo motor de PDF, separaciones y trapping. No hay un segundo motor ni un servidor de archivos.
 
 1. En el editor, elige **Window / Ventana → KX27 · Preprensa**. En una compilación web que incluya este cambio, `?modo=preprensa` entra directamente al escritorio.
 2. Pulsa **Abrir PDF…** y elige el arte de producción. Se conserva el archivo original. La barra incluye mano, selección, zoom, ajuste de página y deshacer.
@@ -12,5 +12,7 @@ KX27.11 · 2026-11-09 · recorrido guiado en el panel de Trapping. El flujo se i
 **Alcance.** Los PDF se abren y procesan en el navegador en la versión WASM. El flujo de preprensa está pensado para PDF; no valida archivos `.AI`. Usa el importador y exportador existentes: el PDF resultante se reconstruye y puede tener diferencias en archivos complejos. En particular, el exportador actual cuantiza los porcentajes de tintas planas a 8 bits; el mapeo conserva los valores que recibió del importador. Todavía no se certifica fidelidad universal para DeviceN, transparencias, imágenes o efectos complejos. El trapping local conserva sus restricciones anteriores.
 
 En el paso **6. Diagnóstico**, **Descargar diagnóstico (.json)** guarda las tintas, los ajustes y los resultados vigentes, incluido el último error si lo hubo. Está disponible durante la revisión, incluso antes de incorporar. El informe no modifica el PDF ni incluye sus imágenes o todos sus contornos.
+
+Si la vista previa pide una zona menor, vuelve a **2. Zona y par**, elige el par y pulsa **Acotar zona**. Arrastra un recuadro en el mapa que cruce el contacto y deje espacio para la franja del lado receptor. El zoom del mapa solo ayuda a dibujarlo. Verifica, previsualiza e incorpora el tramo; la franja queda dentro del recuadro. Cambiar o quitar el recuadro requiere verificar de nuevo. El diagnóstico registra el área en puntos del documento y conserva el recuadro de la última incorporación vigente.
 
 **Validación.** La prueba de integración abre un PDF sintético sin datos de edición incrustados, verifica renombre y unificación de planas, sus porcentajes importados, deshacer y exportación de trapping como `/Separation` con sobreimpresión. La prueba de interfaz comprueba el escritorio y el retorno al editor sin cambiar el documento. El flujo de Actions está configurado para generar un artefacto web de la rama sin desplegarlo encima del editor publicado.

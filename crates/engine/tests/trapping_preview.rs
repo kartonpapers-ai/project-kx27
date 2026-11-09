@@ -226,6 +226,40 @@ fn raster_candidate_halo_and_curve_crossings_reach_both_ellipse_junctions() {
     assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
 }
 #[test]
+fn scoped_preview_recovers_from_a_long_contact_and_commits_only_the_reviewed_band() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"width":200,"height":1800})).unwrap();
+    let ids = [
+        rect(&mut s, Rect::new(0.0, 10.0, 100.0, 1790.0), Color::cmyk(0.0, 0.0, 1.0, 0.0)),
+        rect(&mut s, Rect::new(100.0, 10.0, 200.0, 1790.0), Color::cmyk(0.0, 1.0, 0.0, 0.0)),
+    ];
+    s.execute("swatch.new", &json!({"name":"Spot Yellow","spot":true,"color":{"model":"cmyk","c":0,"m":0,"y":1,"k":0}})).unwrap();
+    s.execute("paint.setFill", &json!({"ids":[ids[0]],"swatch":"Spot Yellow","tint":85})).unwrap();
+    let before = s.doc().unwrap().doc.clone();
+    let full = preview(&mut s, ids, json!([98, 10, 102, 1790]), 0.1).unwrap_err();
+    assert!(full.to_string().contains("presupuesto"), "{full}");
+    let region = json!([98.0, 700.0, 102.0, 715.0]);
+    let p = s.execute("trapping.previewLocal", &json!({"ids":ids,"region":region,"clipToRegion":true,"widthMm":0.1})).unwrap();
+    assert_eq!(p["region"], region);
+    let reviewed = band(&p);
+    assert!(inside(&reviewed, 100.1, 707.5));
+    assert!(!inside(&reviewed, 100.1, 699.99));
+    assert!(!inside(&reviewed, 100.1, 715.01));
+    assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+    let receipt = s.execute("trapping.incorporateLocal", &json!({"previewId":p["previewId"]})).unwrap();
+    let doc = &s.doc().unwrap().doc;
+    let node = doc.node(NodeId(receipt["id"].as_u64().unwrap())).unwrap();
+    let vectorcraft_doc::NodeKind::Path { path, .. } = &node.kind else { panic!("expected a trap path") };
+    assert_eq!(path.to_bezpath().to_svg(), p["bandPath"].as_str().unwrap());
+    assert!(
+        matches!(node.appearance.fill_paint(), Paint::Solid { swatch: Some(ink), tint, .. } if ink == "Spot Yellow" && (tint - 0.85).abs() < 0.001)
+    );
+    assert_eq!(receipt["overprint"], true);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc, before);
+}
+
+#[test]
 fn curve_junctions_remain_clipped_to_paper_occluders_and_explicit_region_scope() {
     let mut s = setup();
     let a = ellipse(&mut s, Rect::new(40.0, 40.0, 160.0, 160.0), Color::cmyk(1.0, 0.0, 0.0, 0.0));

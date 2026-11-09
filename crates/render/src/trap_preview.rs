@@ -176,6 +176,16 @@ pub fn preview(doc: &Document, ids: [NodeId; 2], region: Rect, width_mm: f64) ->
 /// Additional search uncertainty from a raster candidate map, in document points.
 /// Explicit region queries without a map keep their original local scope.
 pub fn preview_with_halo(doc: &Document, ids: [NodeId; 2], region: Rect, width_mm: f64, map_halo: f64) -> Result<Preview, String> {
+    preview_impl(doc, ids, region, width_mm, map_halo, false)
+}
+
+/// Keep a manually selected output region exact while allowing a small search
+/// margin so the stroke can reach the selection edges.
+pub fn preview_in_region(doc: &Document, ids: [NodeId; 2], region: Rect, width_mm: f64) -> Result<Preview, String> {
+    preview_impl(doc, ids, region, width_mm, 0.0, true)
+}
+
+fn preview_impl(doc: &Document, ids: [NodeId; 2], requested: Rect, width_mm: f64, map_halo: f64, exact: bool) -> Result<Preview, String> {
     if !map_halo.is_finite() || !(0.0..=4.0).contains(&map_halo) {
         return Err("El margen del mapa debe ser finito y estar entre 0 y 4 puntos.".into());
     }
@@ -183,14 +193,15 @@ pub fn preview_with_halo(doc: &Document, ids: [NodeId; 2], region: Rect, width_m
         return Err("El ancho de previsualización debe estar entre 0,01 y 0,50 mm.".into());
     }
     // Validate the requested region before inflating it (a reversed region must fail).
-    crate::curves::validate_region(ids, region)?;
+    crate::curves::validate_region(ids, requested)?;
     let halo = (width_mm * PT_MM + 0.1).max(map_halo);
-    let region = region.inflate(halo, halo);
-    let (scene, known) = local_scene(doc, ids, region)?;
+    let search = requested.inflate(halo, halo);
+    let region = if exact { requested } else { search };
+    let (scene, known) = local_scene(doc, ids, search)?;
     if scene.surfaces.len() > 32 || scene.elements > 2048 {
         return Err("La previsualización local admite 32 superficies y 1.024 anclas. Revisa una zona menor.".into());
     }
-    let (runs, tested) = trace(&scene, ids, region)?;
+    let (runs, tested) = trace(&scene, ids, search)?;
     if runs.is_empty() {
         return Err("No se encontraron tramos continuos verificables para esta franja.".into());
     }
