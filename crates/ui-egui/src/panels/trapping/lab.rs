@@ -260,14 +260,49 @@ fn refresh(app: &mut VectorcraftApp, ui: &Ui, settings: &mut Settings) {
     }
 }
 
-fn step_selector(ui: &mut Ui, settings: &mut Settings) {
+fn embedded_step_allowed(settings: &Settings, step: usize) -> bool {
+    allowed(settings, step) && (step != 4 || preview_current(settings))
+}
+
+fn embedded_step_label(settings: &Settings, i: usize, name: &str) -> String {
+    let status = if settings.lab.step == i {
+        "Actual"
+    } else if completed(settings, i) {
+        "Listo"
+    } else if embedded_step_allowed(settings, i) {
+        "Disponible"
+    } else {
+        "Pendiente"
+    };
+    format!("{}. {name} · {status}", i + 1)
+}
+
+fn embedded_steps(ui: &mut Ui, settings: &mut Settings) {
+    if ui.available_height() >= 450.0 {
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = 3.0;
+            for (i, name) in STEPS.iter().enumerate() {
+                let button = crate::prepress::mode_button(ui, embedded_step_label(settings, i, name), settings.lab.step == i)
+                    .min_size(egui::vec2(ui.available_width(), 24.0))
+                    .wrap();
+                if ui.add_enabled(embedded_step_allowed(settings, i), button).clicked() {
+                    settings.lab.step = i;
+                }
+            }
+        });
+        return;
+    }
+    let step = settings.lab.step;
     egui::ComboBox::from_id_salt("trapping-stage")
-        .selected_text(format!("{}. {}", settings.lab.step + 1, STEPS.get(settings.lab.step).unwrap_or(&STEPS[0])))
+        .selected_text(format!("{} de {} · {}", step + 1, STEPS.len(), STEPS.get(step).unwrap_or(&STEPS[0])))
         .width((ui.available_width() - 8.0).clamp(80.0, 360.0))
         .show_ui(ui, |ui| {
             for (i, name) in STEPS.iter().enumerate() {
                 if ui
-                    .add_enabled(allowed(settings, i), crate::prepress::mode_button(ui, format!("{}. {name}", i + 1), settings.lab.step == i))
+                    .add_enabled(
+                        embedded_step_allowed(settings, i),
+                        crate::prepress::mode_button(ui, embedded_step_label(settings, i, name), step == i),
+                    )
                     .clicked()
                 {
                     settings.lab.step = i;
@@ -286,28 +321,32 @@ pub(crate) fn show_embedded(app: &mut VectorcraftApp, ui: &mut Ui) {
     let mut settings = app.ui.trapping.clone();
     refresh(app, ui, &mut settings);
     ui.add_space(6.0);
-    step_selector(ui, &mut settings);
+    embedded_steps(ui, &mut settings);
+    widgets::divider(ui);
     let available = ui.available_height();
-    let pin = available > 390.0;
-    let footer_room = if pair(&settings).is_some() && (1..=4).contains(&settings.lab.step) { 128.0 } else { 67.0 };
+    let pin = available > 280.0;
+    let footer_room = if pair(&settings).is_some() && (1..=4).contains(&settings.lab.step) { 148.0 } else { 84.0 };
     let height = if pin { (available - footer_room).min(480.0) } else { available.max(150.0) };
-    egui::ScrollArea::vertical().id_salt("prepress-stage-content").max_height(if pin { height } else { available }).auto_shrink([false, false]).show(
-        ui,
-        |ui| {
+    egui::ScrollArea::vertical()
+        .id_salt(("prepress-stage-content", settings.lab.step))
+        .max_height(if pin { height } else { available })
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
             stage_content(app, ui, &mut settings, height);
-            let message = if settings.export_message.is_empty() { &settings.message } else { &settings.export_message };
-            if !message.is_empty() {
-                if settings.failed || settings.export_failed {
-                    ui.strong("No se pudo completar");
-                }
-                ui.label(message);
+            if settings.failed || (settings.lab.step == 5 && settings.export_failed) {
+                ui.strong("No se pudo completar");
+            }
+            if !settings.message.is_empty() {
+                ui.label(&settings.message);
+            }
+            if settings.lab.step == 5 && !settings.export_message.is_empty() {
+                ui.label(&settings.export_message);
             }
             if !pin {
                 widgets::divider(ui);
                 footer(app, ui, &mut settings, true);
             }
-        },
-    );
+        });
     if pin {
         widgets::divider(ui);
         footer(app, ui, &mut settings, true);
@@ -721,6 +760,7 @@ fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, docked
         3 => "Previsualizar franja",
         4 if preview_current(settings) => "Incorporar esta franja",
         4 => "Volver a previsualizar",
+        _ if docked => "Descargar diagnóstico (.json)",
         _ => "Exportar diagnóstico (.json)",
     };
     let enabled = app.session.active().is_some() && (stage != 1 || pair(settings).is_some());
@@ -733,8 +773,11 @@ fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, docked
             egui::Button::new(label)
         };
         action = ui.add_enabled(enabled, button.wrap().min_size(egui::vec2(width, 32.0))).clicked();
-        if ui.add_enabled(stage > 0, egui::Button::new("Anterior")).clicked() {
-            settings.lab.step = stage.saturating_sub(1);
+        let previous = (0..stage).rev().find(|&i| if docked { embedded_step_allowed(settings, i) } else { allowed(settings, i) });
+        if ui.add_enabled(previous.is_some(), egui::Button::new("Anterior")).clicked()
+            && let Some(previous) = previous
+        {
+            settings.lab.step = previous;
         }
     } else {
         ui.horizontal(|ui| {

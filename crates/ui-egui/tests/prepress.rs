@@ -120,6 +120,41 @@ fn prepress_frame_shows_workspace_and_switches_back_without_editing() {
 }
 
 #[test]
+fn prepress_guides_detection_and_downloads_the_diagnostic() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = fixture();
+    let before = app.session.doc().unwrap().doc.clone();
+    let files = Rc::new(RefCell::new(Vec::new()));
+    let downloads = files.clone();
+    app.services.download = Some(Box::new(move |name, bytes| downloads.borrow_mut().push((name.to_owned(), bytes.to_vec()))));
+    let mut h = Harness::builder().with_size(egui::vec2(1200., 760.)).build_ui_state(|ui, app| frame(app, ui), app);
+    h.run_steps(5);
+    h.get_by_label("1. Detectar · Actual");
+    h.get_by_label("3. Verificar curvas · Pendiente");
+    h.get_by_label("5. Incorporar · Pendiente");
+    h.get_by_label("Detectar fronteras").click();
+    h.run_steps(5);
+    h.get_by_label("1. Detectar · Listo");
+    h.get_by_label("2. Zona y par · Actual");
+    h.get_by_label("6. Diagnóstico · Disponible").click();
+    h.run_steps(4);
+    h.get_by_label("Descargar diagnóstico (.json)").click();
+    h.run_steps(4);
+    let files = files.borrow();
+    let [(name, bytes)] = files.as_slice() else { panic!("expected one download") };
+    assert!(name.ends_with("-trapping.json"));
+    let report: Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(report["format"], "kx27-trapping-diagnostic");
+    assert_eq!(report["settings"]["development"]["step"], 6);
+    assert!(report["analyses"]["boundaries"]["report"].is_object());
+    assert_eq!(report["imageBytesIncluded"], false);
+    assert!(Arc::ptr_eq(&before, &h.state().session.doc().unwrap().doc));
+    h.get_by_label("Anterior").click();
+    h.run_steps(4);
+    h.get_by_label("2. Zona y par · Actual");
+}
+
+#[test]
 #[ignore = "requires a graphics adapter; optional visual check"]
 fn captures_prepress_workspace() {
     use egui_kittest::kittest::Queryable;
@@ -148,5 +183,13 @@ fn captures_prepress_workspace() {
             "error"
         };
         test.render().unwrap().save(std::path::Path::new(&dir).join(format!("prepress-{w}-{state}.png"))).unwrap();
+        if w < 920.0 {
+            test.get_by_label("Trapping").click();
+            test.run_steps(4);
+        }
+        test.get_by_label("6. Diagnóstico · Disponible").click();
+        test.run_steps(4);
+        test.get_by_label("Descargar diagnóstico (.json)");
+        test.render().unwrap().save(std::path::Path::new(&dir).join(format!("prepress-{w}-diagnostic.png"))).unwrap();
     }
 }
