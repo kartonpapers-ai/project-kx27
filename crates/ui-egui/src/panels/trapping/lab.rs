@@ -233,7 +233,7 @@ pub fn show_window(app: &mut VectorcraftApp, ctx: &egui::Context) {
     app.ui.trapping = settings;
 }
 
-fn show_contents(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings) {
+fn refresh(app: &mut VectorcraftApp, ui: &Ui, settings: &mut Settings) {
     sync_document(app, ui, settings);
     invalidate_boundaries(app, settings);
     if settings.lab.receipt.is_some() && !receipt_current(app, settings) {
@@ -258,6 +258,65 @@ fn show_contents(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings)
             2
         };
     }
+}
+
+fn step_selector(ui: &mut Ui, settings: &mut Settings) {
+    egui::ComboBox::from_id_salt("trapping-stage")
+        .selected_text(format!("{}. {}", settings.lab.step + 1, STEPS.get(settings.lab.step).unwrap_or(&STEPS[0])))
+        .width((ui.available_width() - 8.0).clamp(80.0, 360.0))
+        .show_ui(ui, |ui| {
+            for (i, name) in STEPS.iter().enumerate() {
+                if ui
+                    .add_enabled(allowed(settings, i), crate::prepress::mode_button(ui, format!("{}. {name}", i + 1), settings.lab.step == i))
+                    .clicked()
+                {
+                    settings.lab.step = i;
+                }
+            }
+        });
+}
+
+/// Same staged trapping review in a dock, alongside the document canvas.
+pub(crate) fn show_embedded(app: &mut VectorcraftApp, ui: &mut Ui) {
+    ui.heading("Trapping");
+    if app.session.active().is_none() {
+        ui.label("Abre un PDF para detectar encuentros.");
+        return;
+    }
+    let mut settings = app.ui.trapping.clone();
+    refresh(app, ui, &mut settings);
+    ui.add_space(6.0);
+    step_selector(ui, &mut settings);
+    let available = ui.available_height();
+    let pin = available > 390.0;
+    let footer_room = if pair(&settings).is_some() && (1..=4).contains(&settings.lab.step) { 128.0 } else { 67.0 };
+    let height = if pin { (available - footer_room).min(480.0) } else { available.max(150.0) };
+    egui::ScrollArea::vertical().id_salt("prepress-stage-content").max_height(if pin { height } else { available }).auto_shrink([false, false]).show(
+        ui,
+        |ui| {
+            stage_content(app, ui, &mut settings, height);
+            let message = if settings.export_message.is_empty() { &settings.message } else { &settings.export_message };
+            if !message.is_empty() {
+                if settings.failed || settings.export_failed {
+                    ui.strong("No se pudo completar");
+                }
+                ui.label(message);
+            }
+            if !pin {
+                widgets::divider(ui);
+                footer(app, ui, &mut settings, true);
+            }
+        },
+    );
+    if pin {
+        widgets::divider(ui);
+        footer(app, ui, &mut settings, true);
+    }
+    app.ui.trapping = settings;
+}
+
+fn show_contents(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings) {
+    refresh(app, ui, settings);
     for style in [egui::TextStyle::Body, egui::TextStyle::Button] {
         if let Some(font) = ui.style_mut().text_styles.get_mut(&style) {
             font.size = font.size.max(14.0);
@@ -359,7 +418,7 @@ fn show_contents(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings)
             ui.label(&settings.export_message);
         }
     });
-    footer(app, ui, settings);
+    footer(app, ui, settings, false);
 }
 
 fn stage_content(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, height: f32) {
@@ -371,7 +430,7 @@ fn stage_content(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings,
             invalidate_boundaries(app, settings);
             ui.add_space(14.0);
             ui.label("Comienza con 72 ppp y 15 %. Los candidatos no son traps ni confirman que haga falta trapping.");
-            ui.label("Captura por tintas y Aplicar a la selección siguen disponibles en el panel habitual, al cerrar esta ventana.");
+            ui.label("Captura por tintas y Aplicar a la selección siguen disponibles en la paleta del editor completo.");
             if settings.boundaries.is_some() {
                 ui.strong("El mapa está listo. Puedes continuar a Zona y par o detectarlo nuevamente.");
             }
@@ -638,7 +697,7 @@ fn preview_controls(ui: &mut Ui, settings: &mut Settings) {
     });
 }
 
-fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings) {
+fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, docked: bool) {
     let stage = settings.lab.step;
     let checked = curves_current(settings);
     let visible = settings.curves.as_ref().is_some_and(|c| c.report["visibleSamples"].as_u64().unwrap_or(0) > 0);
@@ -666,14 +725,27 @@ fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings) {
     };
     let enabled = app.session.active().is_some() && (stage != 1 || pair(settings).is_some());
     let mut action = false;
-    ui.horizontal(|ui| {
-        if ui.add_enabled(stage > 0, egui::Button::new("Anterior").min_size(egui::vec2(94.0, 38.0))).clicked() {
+    if docked || ui.available_width() < 360.0 {
+        let width = ui.available_width();
+        let button = if docked && enabled {
+            egui::Button::new(egui::RichText::new(label).strong().color(egui::Color32::WHITE)).fill(Tokens::get(ui.ctx()).accent_strong)
+        } else {
+            egui::Button::new(label)
+        };
+        action = ui.add_enabled(enabled, button.wrap().min_size(egui::vec2(width, 32.0))).clicked();
+        if ui.add_enabled(stage > 0, egui::Button::new("Anterior")).clicked() {
             settings.lab.step = stage.saturating_sub(1);
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            action = ui.add_enabled(enabled, egui::Button::new(label).min_size(egui::vec2(240.0, 38.0))).clicked();
+    } else {
+        ui.horizontal(|ui| {
+            if ui.add_enabled(stage > 0, egui::Button::new("Anterior").min_size(egui::vec2(94.0, 38.0))).clicked() {
+                settings.lab.step = stage.saturating_sub(1);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                action = ui.add_enabled(enabled, egui::Button::new(label).min_size(egui::vec2(240.0, 38.0))).clicked();
+            });
         });
-    });
+    }
     if !action {
         return;
     }

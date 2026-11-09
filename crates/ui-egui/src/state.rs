@@ -360,6 +360,9 @@ pub struct UiState {
     /// Trap Color palette parameters, persisted independently of documents.
     #[serde(default)]
     pub trapping: crate::panels::trapping::Settings,
+    /// Workspace controls, scoped to the current session.
+    #[serde(skip)]
+    pub(crate) prepress: crate::prepress::State,
     /// Color Guide panel: Limit to Library, a swatch library id, "document" (the document's
     /// swatches) or "" (none) (`ui.colorGuideLimit`).
     #[serde(default)]
@@ -647,6 +650,7 @@ impl Default for UiState {
             library_panel: None,
             flattener_preview: Default::default(),
             trapping: Default::default(),
+            prepress: Default::default(),
             color_guide_limit: String::new(),
             align_to: Default::default(),
             svg_options: Value::Null,

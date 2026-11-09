@@ -19,6 +19,9 @@ const TEMPLATE_EXTS: &[&str] = &["vctemplate", "ait", "vectorcraft", "drawcraft"
 /// and flattener, PDF, print and perspective grid presets files are imported. → `document.open`'s result for a document opened now (its
 /// `warnings` say what didn't come in as it was), else null.
 pub fn open_bytes(app: &mut VectorcraftApp, name: &str, bytes: &[u8], path: Option<String>) -> Result<Value, String> {
+    if app.ui.prepress.open && fileio::extension(name) != "pdf" {
+        return Err("Preprensa abre PDFs. Exporta una copia en PDF desde tu editor de diseño.".into());
+    }
     let opens = opens_as(name);
     // A WebAssembly plug-in is installed.
     if opens == Some(OpensAs::Plugin) {
@@ -143,6 +146,19 @@ pub fn open_dialog(app: &mut VectorcraftApp) -> Result<(), String> {
         return Ok(());
     }
     let path = pick_open(app, &FilePick { filters: fileio::open_filters().collect(), ..Default::default() })?;
+    open_reporting(app, &path).map(|_| ())
+}
+
+/// Open the PDF picker without changing the general editor's file filters.
+pub(crate) fn open_pdf_dialog(app: &mut VectorcraftApp) -> Result<(), String> {
+    if let Some(pick) = app.services.open_pdf_async.as_mut() {
+        pick();
+        return Ok(());
+    }
+    let path = pick_open(app, &FilePick { filters: vec![("PDF", &["pdf"])], ..Default::default() })?;
+    if fileio::extension(&path) != "pdf" {
+        return Err("Elige un archivo PDF para abrir en Preprensa.".into());
+    }
     open_reporting(app, &path).map(|_| ())
 }
 

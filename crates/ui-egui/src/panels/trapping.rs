@@ -11,6 +11,7 @@ use crate::theme::Tokens;
 use crate::{VectorcraftApp, widgets};
 
 mod lab;
+pub(crate) use lab::show_embedded as show_prepress;
 pub use lab::{next_pair as next_development_pair, set_omission as omit_development_pair, show_window as show_development_window};
 
 pub const ID: &str = "trapping";

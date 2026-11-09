@@ -1,5 +1,7 @@
 > Fork de VectorCraft. Nombre en clave y alcance: [Project KX27](docs/project-kx27.md).
 
+> **KX27 Preprensa · development branch:** a PDF workspace with ink plates, spot mapping and guided trapping. See [the prepress workflow](docs/kx27-prepress.md).
+
 > Project KX27 · 2026-11-02 (KX27.9): local trapping previews use detector-resolution margins and bounded original-curve intersections to retain contact endpoints. Visible-receiver clipping, explicit region scope and manual omissions remain in place. Shared-ink rules stay on hold; upstream parity scores are unchanged. See [curve endpoints](docs/trapcolor-trapping.md#extremos-de-franjas-en-cruces-de-curvas).
 
 > Project KX27 · 2026-10-30 (KX27.7): a large modeless development window orders detection, zone/pair selection, curve verification, preview, incorporation and JSON diagnostics. Explicit pair context and a persistent primary action replace the long palette sequence for this workflow; original palette actions remain available after closing it. Shared caches, freshness guards and ink algorithms are unchanged; the shared-ink trial remains pending. Upstream parity scores are unchanged. See [guided development window](docs/trapcolor-trapping.md#ventana-de-desarrollo-guiada).

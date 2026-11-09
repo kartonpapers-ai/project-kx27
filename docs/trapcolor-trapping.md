@@ -2,6 +2,8 @@
 
 Estado: extremos locales de curvas KX27.9, 2026-11-02, sobre el flujo de incorporación de franjas locales revisadas. Se conservan la captura por tintas y el trapping de sólidos, spots, degradados lineales e imágenes opacas. No cambia la calificación alfa del editor.
 
+La rama `desarrollo/preprensa` también integra este recorrido en [el escritorio KX27 Preprensa](kx27-prepress.md), junto al arte y las separaciones.
+
 ## Ventana de desarrollo guiada
 
 Abre **Window / Ventana → Trapping · Desarrollo**, o pulsa **Abrir ventana de desarrollo** al principio de la paleta Trapping. Es una ventana flotante amplia, redimensionable y no modal: puedes seguir trabajando en el documento. Su apertura se guarda en preferencias. Mientras está abierta, la paleta habitual muestra un acceso a esta ventana; al cerrarla vuelven sus controles anteriores.

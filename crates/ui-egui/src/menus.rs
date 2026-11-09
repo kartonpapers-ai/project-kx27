@@ -732,6 +732,10 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "",
         "{} select the next non-omitted attributed pair; if none, open diagnostic; UI review only",
     ),
+    ("prepress.workspace", "KX27 · Preprensa", "", "{open?: bool (true)} switch to or leave the prepress workspace"),
+    ("prepress.openPdf", "Abrir PDF…", "", "{} pick a PDF for prepress"),
+    ("prepress.exportPdf", "Exportar PDF…", "", "{} open PDF export options without an editable document payload by default"),
+    ("prepress.mapSpot", "Mapear tinta plana", "", "{source, newName? | target?} rename or consolidate spot plates without converting to process"),
     (
         "trapping.developmentWindow",
         "Trapping · Desarrollo",
@@ -972,6 +976,7 @@ pub fn run_ui_command(app: &mut VectorcraftApp, id: &str, p: &Value) -> Option<R
         }
         "file.open" => match s("path") {
             Some(path) => io::open_path(app, &path),
+            None if app.ui.prepress.open => io::open_pdf_dialog(app).map(|_| Value::Null),
             None => io::open_dialog(app).map(|_| Value::Null),
         },
         // Saves write through the app (save panel, download); with no path known the panel and the
@@ -1433,6 +1438,10 @@ pub fn run_ui_command(app: &mut VectorcraftApp, id: &str, p: &Value) -> Option<R
         }),
         "css.copy" => crate::panels::css_properties::copy(app, p),
         "css.exportFile" => crate::panels::css_properties::export_file(app, p),
+        "prepress.workspace" => opt_bool(p, "open").and_then(|open| crate::prepress::set_open(app, open.unwrap_or(true))),
+        "prepress.openPdf" => io::open_pdf_dialog(app).map(|_| Value::Null),
+        "prepress.exportPdf" => crate::dialogs::open_save_pdf(app, &json!({"preserveEditing":false})),
+        "prepress.mapSpot" => crate::prepress::map_spot(app, p),
         "trapping.developmentWindow" => match opt_bool(p, "open") {
             Ok(open) => {
                 app.ui.trapping.development_window = open.unwrap_or(true);
@@ -1553,6 +1562,7 @@ pub fn checked(app: &VectorcraftApp, id: &str, p: &Value) -> Option<bool> {
             app.ui.floating_flyouts.iter().any(|f| f.tools.iter().any(|id| id == tool))
         }
         "window.taskBar" => app.ui.task_bar,
+        "prepress.workspace" => app.ui.prepress.open,
         "trapping.developmentWindow" => app.ui.trapping.development_window,
         "window.taskBar.pin" => app.ui.task_bar_place.pinned,
         "window.panel" => {
@@ -2007,7 +2017,12 @@ pub fn enabled(app: &VectorcraftApp, id: &str) -> bool {
         "effect.dialog" | "ui.recolorDialog" => app.session.active().is_some_and(|d| !d.selection.is_empty()),
         "ui.cropImage" => selected_image(app, |_| true),
         "effect.applyLast" | "effect.last" => app.last_effect.is_some() && app.session.active().is_some_and(|d| !d.selection.is_empty()),
-        "file.export.pdf" | "ui.savePdfDialog" | "ui.fileInfoDialog" | "ui.rasterEffectsSettingsDialog" => app.session.active().is_some(),
+        "file.export.pdf"
+        | "prepress.exportPdf"
+        | "prepress.mapSpot"
+        | "ui.savePdfDialog"
+        | "ui.fileInfoDialog"
+        | "ui.rasterEffectsSettingsDialog" => app.session.active().is_some(),
         "ui.missingFontsDialog" => !cfg!(target_arch = "wasm32") && app.session.active().is_some(),
         "ui.findFontsInFolder" => crate::picks::can(app, &crate::picks::PickRequest::Folder) && app.session.active().is_some(),
         "ui.swatchOptions" | "ui.newSwatch" | "ui.newColorGroup" => app.session.active().is_some(),
@@ -2638,6 +2653,7 @@ pub fn menu_tree_named(english_names: bool) -> Vec<(&'static str, Vec<Item>)> {
             "Window",
             vec![
                 c("New Window", "window.newWindow"),
+                c("KX27 · Preprensa", "prepress.workspace"),
                 c("Trapping · Desarrollo", "trapping.developmentWindow"),
                 sub("Arrange", vec![todo("Cascade"), todo("Tile"), todo("Float in Window"), todo("Consolidate All Windows")]),
                 sub("Workspace", crate::workspaces::menu_items()),

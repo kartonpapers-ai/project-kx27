@@ -119,7 +119,15 @@ async fn run(host: Host, canvas: web_sys::HtmlCanvasElement, moving: Option<Movi
                         app.status("The graphics were lost and have been restarted");
                         app
                     }
-                    None => VectorcraftApp::new(Session::new(), services),
+                    None => {
+                        let mut app = VectorcraftApp::new(Session::new(), services);
+                        if query_param("modo").as_deref() == Some("preprensa")
+                            && let Err(e) = app.run("prepress.workspace", Default::default())
+                        {
+                            app.status(e);
+                        }
+                        app
+                    }
                 };
                 Ok(Box::new(WebShell { app: Some(app), host, canvas: page, loss }))
             }),
@@ -395,6 +403,8 @@ impl eframe::App for WebShell {
 
 fn services(inbox: Inbox, place_inbox: PlaceInbox, ctx: egui::Context, locks: Option<WebLocks>) -> Services {
     let open_inbox = inbox.clone();
+    let pdf_inbox = inbox.clone();
+    let pdf_ctx = ctx.clone();
     let picked = place_inbox.clone();
     let place_ctx = ctx.clone();
     Services {
@@ -431,6 +441,17 @@ fn services(inbox: Inbox, place_inbox: PlaceInbox, ctx: egui::Context, locks: Op
                 };
                 let bytes = file.read().await;
                 inbox.lock().unwrap_or_else(|e| e.into_inner()).push((file.file_name(), bytes));
+                ctx.request_repaint();
+            });
+        })),
+        open_pdf_async: Some(Box::new(move || {
+            let inbox = pdf_inbox.clone();
+            let ctx = pdf_ctx.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let Some(file) = rfd::AsyncFileDialog::new().add_filter("PDF", &["pdf"]).pick_file().await else { return };
+                let name = file.file_name();
+                let bytes = file.read().await;
+                inbox.lock().unwrap_or_else(|e| e.into_inner()).push((name, bytes));
                 ctx.request_repaint();
             });
         })),

@@ -449,7 +449,7 @@ pub fn show(app: &mut VectorcraftApp, ui: &mut Ui) {
         }
         rulers(ui, full, &xf, app.hover_doc, app.session.general_unit(), origin_preview.unwrap_or_else(|| app.ruler_origin()), &t);
     }
-    if app.ui.task_bar && !revolve_edit && !app.session.tool_busy() && app.ui.screen_mode < 3 {
+    if app.ui.task_bar && !app.ui.prepress.open && !revolve_edit && !app.session.tool_busy() && app.ui.screen_mode < 3 {
         task_bar(app, ui, &xf);
     }
     if app.ui.screen_mode < 3 {

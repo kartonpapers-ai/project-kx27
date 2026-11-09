@@ -43,6 +43,7 @@ pub mod panels;
 pub mod picks;
 pub mod place;
 pub mod prefs_dialog;
+mod prepress;
 pub mod print;
 pub mod recovery;
 pub mod render_worker;
@@ -209,6 +210,8 @@ pub struct Services {
     pub download: Option<DownloadFn>,
     /// Web: start an async open (bytes arrive via `inbox`).
     pub open_async: Option<Box<dyn FnMut()>>,
+    /// Web: pick a PDF for the prepress workspace (bytes arrive via `inbox`).
+    pub open_pdf_async: Option<Box<dyn FnMut()>>,
     /// Read the system clipboard's text (desktop). Without it, pasted text only arrives with
     /// egui's Paste event (web, and keyboard paste everywhere).
     pub clipboard_read: Option<Box<dyn FnMut() -> Option<String>>>,
@@ -1231,32 +1234,36 @@ impl VectorcraftApp {
         font_menu::end_stale_preview(self, &ctx);
         floating::track(self, &ctx);
         let t = theme::Tokens::get(&ctx);
-        if self.ui.screen_mode < 2 {
-            chrome::app_bar(self, ui);
-            if self.ui.control_bar {
-                chrome::control_bar(self, ui);
+        if self.ui.prepress.open {
+            prepress::show(self, ui);
+        } else {
+            if self.ui.screen_mode < 2 {
+                chrome::app_bar(self, ui);
+                if self.ui.control_bar {
+                    chrome::control_bar(self, ui);
+                }
             }
-        }
-        if self.ui.status_bar && self.ui.screen_mode < 3 {
-            chrome::status_bar(self, ui);
-            chrome::hint_bar(self, ui);
-        }
-        if self.ui.toolbar && self.ui.screen_mode < 3 {
-            toolbar::show(self, ui);
-        }
-        if self.ui.dock && self.ui.screen_mode < 3 {
-            dock::show(self, ui);
-        }
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.pasteboard)).show(ui, |ui| {
-            if self.ui.screen_mode < 3 {
-                chrome::doc_tabs(self, ui);
+            if self.ui.status_bar && self.ui.screen_mode < 3 {
+                chrome::status_bar(self, ui);
+                chrome::hint_bar(self, ui);
             }
-            canvas::show(self, ui);
-        });
-        dock::floating_panel(self, &ctx);
-        floating::show(self, &ctx);
-        panels::library_panel::show_window(self, &ctx);
-        panels::trapping::show_development_window(self, &ctx);
+            if self.ui.toolbar && self.ui.screen_mode < 3 {
+                toolbar::show(self, ui);
+            }
+            if self.ui.dock && self.ui.screen_mode < 3 {
+                dock::show(self, ui);
+            }
+            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.pasteboard)).show(ui, |ui| {
+                if self.ui.screen_mode < 3 {
+                    chrome::doc_tabs(self, ui);
+                }
+                canvas::show(self, ui);
+            });
+            dock::floating_panel(self, &ctx);
+            floating::show(self, &ctx);
+            panels::library_panel::show_window(self, &ctx);
+            panels::trapping::show_development_window(self, &ctx);
+        }
         dialogs::show(self, &ctx);
         palette::show(self, &ctx);
         if self.custom_titlebar {

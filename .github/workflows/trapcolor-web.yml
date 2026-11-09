@@ -1,7 +1,7 @@
 name: Project KX27 web
 on:
   push:
-    branches: ["main", "desarrollo/paleta-trapping"]
+    branches: ["main", "desarrollo/paleta-trapping", "desarrollo/preprensa"]
   workflow_dispatch:
     inputs:
       publish:
@@ -39,11 +39,11 @@ jobs:
           path: dist/web
           if-no-files-found: error
       - uses: actions/upload-pages-artifact@v3
-        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref != 'refs/heads/desarrollo/preprensa') }}
         with:
           path: dist/web
   deploy:
-    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref != 'refs/heads/desarrollo/preprensa') }}
     needs: build
     runs-on: ubuntu-latest
     permissions:
