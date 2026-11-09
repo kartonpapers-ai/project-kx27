@@ -286,7 +286,9 @@ pub(crate) fn show(app: &mut VectorcraftApp, ui: &mut Ui) {
         let panel = if width >= 620.0 {
             Panel::right("prepress-compact-side").exact_size(280.0)
         } else {
-            Panel::bottom("prepress-compact-bottom").exact_size((ui.available_height() * 0.43).clamp(95.0, 310.0))
+            let available = ui.available_height();
+            let minimum = if pane == Pane::Trap { 205.0 } else { 95.0 };
+            Panel::bottom("prepress-compact-bottom").exact_size((available * 0.43).clamp(minimum, 310.0).min(available))
         };
         panel.resizable(false).frame(pane_frame).show(ui, |ui| match pane {
             Pane::Inks => inks(app, ui),

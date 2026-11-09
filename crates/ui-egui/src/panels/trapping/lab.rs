@@ -318,6 +318,74 @@ fn flow_done(settings: &Settings, step: usize) -> bool {
     completed(settings, step) || (flow_index(step) < 6 && settings.lab.receipt.is_some())
 }
 
+fn guide_color(ui: &Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode { egui::Color32::from_rgb(255, 103, 121) } else { egui::Color32::from_rgb(178, 25, 60) }
+}
+
+/// One short fade per actionable transition; the steady outline carries the cue afterwards.
+fn guide_pulse(ui: &Ui, key: (usize, &'static str)) -> f32 {
+    let id = ui.id().with("trapping-next-cue");
+    let now = ui.input(|input| input.time);
+    let started = ui.ctx().data_mut(|data| {
+        if let Some((last, start)) = data.get_temp::<((usize, &'static str), f64)>(id)
+            && last == key
+        {
+            return start;
+        }
+        data.insert_temp(id, (key, now));
+        now
+    });
+    let elapsed = (now - started).max(0.0);
+    if elapsed >= 0.48 || ui.style().animation_time <= 0.0 {
+        return 0.0;
+    }
+    ui.ctx().request_repaint();
+    (1.0 - elapsed as f32 / 0.48).powi(3)
+}
+
+fn guide_outline(ui: &Ui, rect: egui::Rect, pulse: f32) {
+    let color = guide_color(ui);
+    if pulse > 0.0 {
+        ui.painter().rect_stroke(rect.expand(2.0), 5.0, egui::Stroke::new(2.0, color.gamma_multiply(0.32 * pulse)), egui::StrokeKind::Inside);
+    }
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.5, color), egui::StrokeKind::Inside);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Choice {
+    Zone,
+    Pair,
+}
+
+fn pending_choice(settings: &Settings) -> Option<Choice> {
+    if settings.lab.step != 1 {
+        return None;
+    }
+    let zones = settings.boundaries.as_ref()?.report["zones"].as_array()?;
+    if zones.is_empty() {
+        return None;
+    }
+    let Some(zone) = settings.boundary_selected.and_then(|i| zones.get(i)) else { return Some(Choice::Zone) };
+    let has_pairs = zone["attribution"]["pairs"].as_array().is_some_and(|pairs| !pairs.is_empty());
+    if !has_pairs {
+        Some(Choice::Zone)
+    } else if settings.lab.pair.is_none() {
+        Some(Choice::Pair)
+    } else {
+        None
+    }
+}
+
+fn guide_key(settings: &Settings) -> (usize, &'static str) {
+    let action = match pending_choice(settings) {
+        Some(Choice::Zone) => "Elegir zona",
+        Some(Choice::Pair) => "Elegir par",
+        None if settings.lab.drawing_scope => "Dibujar recuadro",
+        None => next_label(settings, true),
+    };
+    (settings.lab.step, action)
+}
+
 fn flow_arrow(ui: &Ui, from: egui::Pos2, to: egui::Pos2, color: egui::Color32) {
     let axis = (to - from).normalized();
     let across = egui::vec2(-axis.y, axis.x);
@@ -333,7 +401,15 @@ fn flow_arrow(ui: &Ui, from: egui::Pos2, to: egui::Pos2, color: egui::Color32) {
     ui.painter().line_segment([end, tail - across * 2.0], stroke);
 }
 
-fn flow_node(ui: &mut Ui, settings: &mut Settings, index: usize, size: egui::Vec2, vertical: bool, previous: Option<egui::Pos2>) -> egui::Pos2 {
+fn flow_node(
+    ui: &mut Ui,
+    settings: &mut Settings,
+    index: usize,
+    size: egui::Vec2,
+    vertical: bool,
+    previous: Option<egui::Pos2>,
+    pulse: f32,
+) -> egui::Pos2 {
     let (id, name) = PREPRESS_FLOW[index];
     let active = settings.lab.step == id;
     let done = flow_done(settings, id);
@@ -370,7 +446,10 @@ fn flow_node(ui: &mut Ui, settings: &mut Settings, index: usize, size: egui::Vec
     if active || done {
         painter.circle_filled(center, 9.5, tokens.accent_strong);
         if active {
-            painter.circle_stroke(center, 10.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+            painter.circle_stroke(center, 10.0, egui::Stroke::new(1.5, guide_color(ui)));
+            if pulse > 0.0 {
+                painter.circle_stroke(center, 12.0, egui::Stroke::new(1.5, guide_color(ui).gamma_multiply(0.40 * pulse)));
+            }
         }
     } else {
         painter.circle_stroke(center, 9.0, egui::Stroke::new(1.0, tokens.text_dim));
@@ -398,15 +477,15 @@ fn flow_node(ui: &mut Ui, settings: &mut Settings, index: usize, size: egui::Vec
     center
 }
 
-fn embedded_steps(ui: &mut Ui, settings: &mut Settings) {
-    let vertical = ui.available_height() >= 490.0 && ui.available_width() >= 220.0;
+fn embedded_steps(ui: &mut Ui, settings: &mut Settings, pulse: f32) {
+    let vertical = ui.available_height() >= 515.0 && ui.available_width() >= 220.0;
     ui.scope(|ui| {
         let mut previous = None;
         if vertical {
             ui.spacing_mut().item_spacing.y = 4.0;
             let width = ui.available_width();
             for i in 0..PREPRESS_FLOW.len() {
-                previous = Some(flow_node(ui, settings, i, egui::vec2(width, 24.0), true, previous));
+                previous = Some(flow_node(ui, settings, i, egui::vec2(width, 24.0), true, previous, pulse));
             }
         } else {
             ui.spacing_mut().item_spacing.x = 4.0;
@@ -415,7 +494,7 @@ fn embedded_steps(ui: &mut Ui, settings: &mut Settings) {
             for row in (0..PREPRESS_FLOW.len()).step_by(columns) {
                 ui.horizontal(|ui| {
                     for i in row..(row + columns).min(PREPRESS_FLOW.len()) {
-                        previous = Some(flow_node(ui, settings, i, egui::vec2(width, 26.0), false, previous));
+                        previous = Some(flow_node(ui, settings, i, egui::vec2(width, 26.0), false, previous, pulse));
                     }
                     previous = None;
                 });
@@ -435,19 +514,22 @@ pub(crate) fn show_embedded(app: &mut VectorcraftApp, ui: &mut Ui) {
     }
     let mut settings = app.ui.trapping.clone();
     refresh(app, ui, &mut settings, true);
+    let key = guide_key(&settings);
+    let pulse = guide_pulse(ui, key);
     ui.add_space(6.0);
-    embedded_steps(ui, &mut settings);
+    embedded_steps(ui, &mut settings, pulse);
     widgets::divider(ui);
-    let available = ui.available_height();
-    let pin = available > 280.0;
-    let footer_room = if pair(&settings).is_some() && decision_stage(settings.lab.step) { 148.0 } else { 84.0 };
-    let height = if pin { (available - footer_room).min(480.0) } else { available.max(150.0) };
-    egui::ScrollArea::vertical()
-        .id_salt(("prepress-stage-content", settings.lab.step))
-        .max_height(if pin { height } else { available })
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            stage_content(app, ui, &mut settings, height, true);
+    let choice = pending_choice(&settings);
+    if let Some(choice) = choice {
+        selectors(app, ui, &mut settings, Some((choice, pulse)));
+    }
+    footer(app, ui, &mut settings, Some(pulse));
+    widgets::divider(ui);
+    let height = ui.available_height().max(1.0);
+    egui::ScrollArea::vertical().id_salt(("prepress-stage-content", settings.lab.step)).max_height(height).auto_shrink([false, false]).show(
+        ui,
+        |ui| {
+            stage_content(app, ui, &mut settings, height, true, choice.is_some());
             if settings.failed || (settings.lab.step == 5 && settings.export_failed) {
                 ui.strong("No se pudo completar");
             }
@@ -457,14 +539,10 @@ pub(crate) fn show_embedded(app: &mut VectorcraftApp, ui: &mut Ui) {
             if settings.lab.step == 5 && !settings.export_message.is_empty() {
                 ui.label(&settings.export_message);
             }
-            if !pin {
-                widgets::divider(ui);
-                footer(app, ui, &mut settings, true);
-            }
-        });
-    if pin {
-        widgets::divider(ui);
-        footer(app, ui, &mut settings, true);
+        },
+    );
+    if key != guide_key(&settings) {
+        ui.ctx().request_repaint();
     }
     app.ui.trapping = settings;
 }
@@ -549,7 +627,7 @@ fn show_contents(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings)
                     ui.label("Abre tu archivo desde Archivo > Abrir. Esta ventana permanecerá disponible.");
                     return;
                 }
-                stage_content(app, ui, settings, body_height, false);
+                stage_content(app, ui, settings, body_height, false, false);
             });
         });
     });
@@ -572,10 +650,10 @@ fn show_contents(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings)
             ui.label(&settings.export_message);
         }
     });
-    footer(app, ui, settings, false);
+    footer(app, ui, settings, None);
 }
 
-fn stage_content(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, height: f32, docked: bool) {
+fn stage_content(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, height: f32, docked: bool, selectors_pinned: bool) {
     match settings.lab.step {
         0 => {
             ui.label("Calcula el mapa de encuentros visibles. No necesitas seleccionar todo el trabajo.");
@@ -591,7 +669,9 @@ fn stage_content(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings,
         }
         1 => {
             ui.label("Elige una zona y después el par concreto que vas a revisar.");
-            selectors(app, ui, settings);
+            if !selectors_pinned {
+                selectors(app, ui, settings, None);
+            }
             scope_controls(ui, settings);
             boundary_map(app, ui, settings, (height - 180.0).max(100.0), true);
         }
@@ -689,9 +769,6 @@ fn stage_content(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings,
             ui.label("Exporta el diagnóstico para revisar ajustes, tintas, par y resultados vigentes. También puedes hacerlo después de un error.");
             ui.label("Este JSON no reemplaza el archivo original ni contiene sus imágenes o todos sus contornos.");
             ui.add_space(12.0);
-            if docked && ui.button("Continuar a exportar PDF").clicked() {
-                settings.lab.step = EXPORT_PDF;
-            }
             if ui.button("Volver a Detectar").clicked() {
                 settings.lab.step = 0;
             }
@@ -719,43 +796,55 @@ fn adjust_controls(ui: &mut Ui, settings: &mut Settings) {
     }
 }
 
-fn selectors(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings) {
+fn selectors(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, guide: Option<(Choice, f32)>) {
     let Some(c) = settings.boundaries.clone() else { return };
     let zones = c.report["zones"].as_array();
     if zones.is_none_or(Vec::is_empty) {
         ui.label("No se encontraron zonas con estos ajustes. Vuelve a Detectar para revisar el mapa.");
     }
     let selected = settings.boundary_selected.map_or_else(|| "Elige una zona".into(), |i| format!("Zona {}", i + 1));
-    egui::ComboBox::from_label("Zona").selected_text(selected).width((ui.available_width() - 64.0).clamp(80.0, 600.0)).show_ui(ui, |ui| {
-        for (i, z) in zones.into_iter().flatten().enumerate() {
-            let inks = z["plates"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join(" / ");
-            if ui.selectable_label(settings.boundary_selected == Some(i), format!("Zona {} · {inks}", i + 1)).clicked() {
-                select_zone(app, settings, &c, i);
+    let control =
+        egui::ComboBox::from_label("Zona").selected_text(selected).width((ui.available_width() - 64.0).clamp(80.0, 600.0)).show_ui(ui, |ui| {
+            for (i, z) in zones.into_iter().flatten().enumerate() {
+                let inks = z["plates"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join(" / ");
+                if ui.selectable_label(settings.boundary_selected == Some(i), format!("Zona {} · {inks}", i + 1)).clicked() {
+                    select_zone(app, settings, &c, i);
+                }
             }
-        }
-    });
+        });
+    if let Some((Choice::Zone, pulse)) = guide {
+        guide_outline(ui, control.response.rect, pulse);
+    }
     if let Some(zone) = settings.boundary_selected.and_then(|i| zones.and_then(|v| v.get(i))) {
         let pairs = zone["attribution"]["pairs"].as_array();
         let count = pairs.map_or(0, Vec::len);
         let selected = settings.lab.pair.map_or_else(|| "Elige un par".into(), |i| format!("Par {}", i + 1));
-        egui::ComboBox::from_label("Par").selected_text(selected).width((ui.available_width() - 64.0).clamp(80.0, 600.0)).show_ui(ui, |ui| {
-            for (i, p) in pairs.into_iter().flatten().enumerate() {
-                if ui
-                    .selectable_label(
-                        settings.lab.pair == Some(i),
-                        format!(
-                            "Par {}{} · {}",
-                            i + 1,
-                            if omitted(settings, settings.boundary_selected.unwrap_or(usize::MAX), i) { " · Omitido" } else { "" },
-                            label_ids(settings, &p["ids"])
-                        ),
-                    )
-                    .clicked()
-                {
-                    select_pair(app, settings, i);
+        let control =
+            egui::ComboBox::from_label("Par").selected_text(selected).width((ui.available_width() - 64.0).clamp(80.0, 600.0)).show_ui(ui, |ui| {
+                for (i, p) in pairs.into_iter().flatten().enumerate() {
+                    if ui
+                        .selectable_label(
+                            settings.lab.pair == Some(i),
+                            format!(
+                                "Par {}{} · {}",
+                                i + 1,
+                                if omitted(settings, settings.boundary_selected.unwrap_or(usize::MAX), i) { " · Omitido" } else { "" },
+                                label_ids(settings, &p["ids"])
+                            ),
+                        )
+                        .clicked()
+                    {
+                        select_pair(app, settings, i);
+                    }
                 }
-            }
-        });
+            });
+        if let Some((Choice::Pair, pulse)) = guide {
+            guide_outline(ui, control.response.rect, pulse);
+        }
+        // Keep the fixed area limited to controls when the operator has to choose.
+        if guide.is_some() {
+            return;
+        }
         if count == 0 {
             ui.label("Zona sin pareja atribuible. Elige otra zona para continuar.");
         } else if settings.lab.pair.is_none() {
@@ -964,21 +1053,12 @@ fn decision_stage(step: usize) -> bool {
     matches!(step, 1..=4 | ADJUST)
 }
 
-fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, docked: bool) {
+fn next_label(settings: &Settings, docked: bool) -> &'static str {
     let stage = settings.lab.step;
     let checked = curves_current(settings);
     let visible = settings.curves.as_ref().is_some_and(|c| c.report["visibleSamples"].as_u64().unwrap_or(0) > 0);
     let is_omitted = decision_stage(stage) && current_omitted(settings);
-    if pair(settings).is_some() && decision_stage(stage) {
-        ui.horizontal_wrapped(|ui| {
-            let label = if is_omitted { "Volver a evaluar" } else { "Omitir trapping" };
-            if ui.add(egui::Button::new(label).min_size(egui::vec2(140.0, 30.0))).clicked() {
-                decision_action(app, settings, "trapping.omitPair", json!({"omit":!is_omitted}));
-            }
-            ui.label(if is_omitted { "Omitido · sin franja" } else { "Decisión manual para este par y esta zona." });
-        });
-    }
-    let label = match stage {
+    match stage {
         _ if is_omitted => "Revisar otro par",
         0 => "Detectar fronteras",
         1 => "Continuar a verificar curvas",
@@ -991,9 +1071,35 @@ fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, docked
         3 => "Previsualizar franja",
         4 if preview_current(settings) => "Incorporar esta franja",
         4 => "Volver a previsualizar",
-        _ if docked => "Descargar diagnóstico (.json)",
+        5 if docked => "Continuar a exportar PDF",
         _ => "Exportar diagnóstico (.json)",
-    };
+    }
+}
+
+fn decision_button(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, is_omitted: bool, docked: bool) {
+    let label = if is_omitted { "Volver a evaluar" } else { "Omitir trapping" };
+    let button = egui::Button::new(label);
+    let button = if docked { button } else { button.min_size(egui::vec2(140.0, 30.0)) };
+    let response = ui.add(button).on_hover_text("Decisión manual para este par y esta zona.");
+    if response.clicked() {
+        decision_action(app, settings, "trapping.omitPair", json!({"omit":!is_omitted}));
+    }
+}
+
+fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, guide: Option<f32>) {
+    let docked = guide.is_some();
+    let stage = settings.lab.step;
+    let checked = curves_current(settings);
+    let visible = settings.curves.as_ref().is_some_and(|c| c.report["visibleSamples"].as_u64().unwrap_or(0) > 0);
+    let is_omitted = decision_stage(stage) && current_omitted(settings);
+    let decision = pair(settings).is_some() && decision_stage(stage);
+    if decision && !docked {
+        ui.horizontal_wrapped(|ui| {
+            decision_button(app, ui, settings, is_omitted, false);
+            ui.label(if is_omitted { "Omitido · sin franja" } else { "Decisión manual para este par y esta zona." });
+        });
+    }
+    let label = next_label(settings, docked);
     let enabled = app.session.active().is_some() && (stage != 1 || (pair(settings).is_some() && !settings.lab.drawing_scope));
     let mut action = false;
     if docked || ui.available_width() < 360.0 {
@@ -1003,17 +1109,29 @@ fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, docked
         } else {
             egui::Button::new(label)
         };
-        action = ui.add_enabled(enabled, button.wrap().min_size(egui::vec2(width, 32.0))).clicked();
+        let response = ui.add_enabled(enabled, button.wrap().min_size(egui::vec2(width, 32.0)));
+        if let Some(pulse) = guide.filter(|_| enabled) {
+            guide_outline(ui, response.rect, pulse);
+        }
+        action = response.clicked();
         let previous = if docked {
             PREPRESS_FLOW.iter().take(flow_index(stage)).rev().map(|&(id, _)| id).find(|&id| embedded_step_allowed(settings, id))
         } else {
             (0..stage).rev().find(|&i| allowed(settings, i))
         };
-        if ui.add_enabled(previous.is_some(), egui::Button::new("Anterior")).clicked()
-            && let Some(previous) = previous
-        {
-            settings.lab.step = previous;
-        }
+        ui.horizontal_wrapped(|ui| {
+            if ui.add_enabled(previous.is_some(), egui::Button::new("Anterior")).clicked()
+                && let Some(previous) = previous
+            {
+                settings.lab.step = previous;
+            }
+            if docked && stage == 5 && ui.button("Descargar diagnóstico (.json)").clicked() {
+                download_diagnostic(app, settings);
+            }
+            if docked && decision {
+                decision_button(app, ui, settings, is_omitted, true);
+            }
+        });
     } else {
         ui.horizontal(|ui| {
             if ui.add_enabled(stage > 0, egui::Button::new("Anterior").min_size(egui::vec2(94.0, 38.0))).clicked() {
@@ -1070,22 +1188,25 @@ fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, docked
                 settings.lab.step = 3;
             }
         }
-        _ => {
-            app.ui.trapping = settings.clone();
-            match app.run("trapping.exportDiagnostic", json!({})) {
-                Ok(_) => {
-                    settings.export_message = "Diagnóstico JSON exportado.".into();
-                    settings.export_failed = false;
-                }
-                Err(e) if e == "cancelled" => {
-                    settings.export_message.clear();
-                    settings.export_failed = false;
-                }
-                Err(e) => {
-                    settings.export_message = e;
-                    settings.export_failed = true;
-                }
-            }
+        5 if docked => settings.lab.step = EXPORT_PDF,
+        _ => download_diagnostic(app, settings),
+    }
+}
+
+fn download_diagnostic(app: &mut VectorcraftApp, settings: &mut Settings) {
+    app.ui.trapping = settings.clone();
+    match app.run("trapping.exportDiagnostic", json!({})) {
+        Ok(_) => {
+            settings.export_message = "Diagnóstico JSON exportado.".into();
+            settings.export_failed = false;
+        }
+        Err(e) if e == "cancelled" => {
+            settings.export_message.clear();
+            settings.export_failed = false;
+        }
+        Err(e) => {
+            settings.export_message = e;
+            settings.export_failed = true;
         }
     }
 }

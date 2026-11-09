@@ -191,6 +191,47 @@ fn prepress_runs_the_eight_steps_and_opens_pdf_export_from_the_last_node() {
 }
 
 #[test]
+fn compact_prepress_keeps_diagnostic_actions_in_view_while_details_scroll() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    for (w, height) in [(820., 420.), (540., 410.)] {
+        let mut h = Harness::builder().with_size(egui::vec2(w, height)).build_ui_state(|ui, app| frame(app, ui), fixture());
+        h.run_steps(5);
+        let click = |h: &mut Harness<'_, VectorcraftApp>, label: &str| {
+            h.get_by_label(label).click();
+            h.run_steps(4);
+        };
+        click(&mut h, "Trapping");
+        click(&mut h, "Detectar fronteras");
+        click(&mut h, "Zona");
+        h.get_by_label_contains("Zona 1 ·").click();
+        h.run_steps(4);
+        click(&mut h, "Omitir trapping");
+        click(&mut h, "Revisar otro par");
+        let next = "Continuar a exportar PDF";
+        let anchor = h.get_by_label(next).accesskit_node().bounding_box().unwrap();
+        for label in [next, "Descargar diagnóstico (.json)"] {
+            let r = h.get_by_label(label).accesskit_node().bounding_box().unwrap();
+            assert!(r.x0 >= 0. && r.y0 >= 0. && r.x1 <= f64::from(w) && r.y1 <= f64::from(height), "{label}: {r:?}");
+        }
+        let details = h.get_by_label("1 pares omitidos por decisión del operador").accesskit_node().bounding_box().unwrap();
+        let cursor = egui::pos2((details.x0 + 10.) as f32, (details.y0 + 8.) as f32);
+        h.hover_at(cursor);
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -240.0),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+        });
+        h.run_steps(4);
+        let scrolled = h.query_by_label("1 pares omitidos por decisión del operador").and_then(|node| node.accesskit_node().bounding_box());
+        assert!(scrolled.is_none_or(|r| r.y0 < details.y0), "the details did not scroll at {w}×{height}");
+        assert_eq!(h.get_by_label(next).accesskit_node().bounding_box().unwrap(), anchor);
+        click(&mut h, next);
+        h.get_by_label("8. Exportar PDF · Actual");
+    }
+}
+
+#[test]
 #[ignore = "requires a graphics adapter; optional visual check"]
 fn captures_prepress_workspace() {
     use egui_kittest::kittest::Queryable;
@@ -226,6 +267,7 @@ fn captures_prepress_workspace() {
         test.get_by_label("7. Diagnóstico · Disponible").click();
         test.run_steps(4);
         test.get_by_label("Descargar diagnóstico (.json)");
+        test.get_by_label("Continuar a exportar PDF");
         test.render().unwrap().save(std::path::Path::new(&dir).join(format!("prepress-{w}-diagnostic.png"))).unwrap();
     }
 }
