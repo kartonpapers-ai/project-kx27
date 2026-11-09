@@ -3,6 +3,20 @@
 use super::*;
 use std::sync::Weak;
 
+// Preserve the six development-stage IDs used by diagnostics and the floating window.
+const ADJUST: usize = 6;
+const EXPORT_PDF: usize = 7;
+const PREPRESS_FLOW: [(usize, &str); 8] = [
+    (0, "Detectar"),
+    (1, "Zona y par"),
+    (2, "Verificar curvas"),
+    (ADJUST, "Ajustar franja"),
+    (3, "Previsualizar"),
+    (4, "Incorporar"),
+    (5, "Diagnóstico"),
+    (EXPORT_PDF, "Exportar PDF"),
+];
+
 const STEPS: [&str; 6] = ["Detectar", "Zona y par", "Verificar curvas", "Previsualizar", "Incorporar", "Diagnóstico"];
 #[derive(Clone, Debug, Default)]
 pub(super) struct State {
@@ -11,6 +25,7 @@ pub(super) struct State {
     pub receipt: Option<Receipt>,
     pub omissions: Vec<Omission>,
     pub review_region: Option<[f64; 4]>,
+    adjusted: Option<Weak<CurveCheck>>,
     drawing_scope: bool,
     scope_start: Option<egui::Pos2>,
 }
@@ -161,10 +176,10 @@ fn receipt_current(app: &VectorcraftApp, settings: &Settings) -> bool {
 }
 fn allowed(settings: &Settings, step: usize) -> bool {
     match step {
-        0 | 5 => true,
+        0 | 5 | EXPORT_PDF => true,
         1 => settings.boundaries.is_some(),
         2 => pair(settings).is_some() && !current_omitted(settings),
-        3 | 4 => {
+        3 | 4 | ADJUST => {
             !current_omitted(settings)
                 && curves_current(settings)
                 && settings.curves.as_ref().is_some_and(|c| c.report["visibleSamples"].as_u64().unwrap_or(0) > 0)
@@ -180,6 +195,10 @@ fn completed(settings: &Settings, step: usize) -> bool {
         3 => preview_current(settings),
         4 => settings.lab.receipt.is_some(),
         5 => !settings.export_message.is_empty() && !settings.export_failed,
+        ADJUST => {
+            settings.lab.adjusted.as_ref().is_some_and(|check| settings.curves.as_ref().is_some_and(|current| check.ptr_eq(&Arc::downgrade(current))))
+                || preview_current(settings)
+        }
         _ => false,
     }
 }
@@ -251,7 +270,7 @@ pub fn show_window(app: &mut VectorcraftApp, ctx: &egui::Context) {
     app.ui.trapping = settings;
 }
 
-fn refresh(app: &mut VectorcraftApp, ui: &Ui, settings: &mut Settings) {
+fn refresh(app: &mut VectorcraftApp, ui: &Ui, settings: &mut Settings, docked: bool) {
     sync_document(app, ui, settings);
     invalidate_boundaries(app, settings);
     if settings.lab.receipt.is_some() && !receipt_current(app, settings) {
@@ -266,7 +285,13 @@ fn refresh(app: &mut VectorcraftApp, ui: &Ui, settings: &mut Settings) {
         settings.preview = None;
     }
     settings.lab.omissions.retain(|o| settings.boundaries.as_ref().is_some_and(|c| o.boundary.ptr_eq(&Arc::downgrade(c))));
-    settings.lab.step = settings.lab.step.min(5);
+    if !docked {
+        settings.lab.step = match settings.lab.step {
+            ADJUST => 3,
+            EXPORT_PDF => 5,
+            step => step.min(5),
+        };
+    }
     if !allowed(settings, settings.lab.step) {
         settings.lab.step = if settings.boundaries.is_none() {
             0
@@ -285,51 +310,120 @@ fn embedded_step_allowed(settings: &Settings, step: usize) -> bool {
     allowed(settings, step) && (step != 4 || preview_current(settings))
 }
 
-fn embedded_step_label(settings: &Settings, i: usize, name: &str) -> String {
-    let status = if settings.lab.step == i {
+fn flow_index(step: usize) -> usize {
+    PREPRESS_FLOW.iter().position(|&(id, _)| id == step).unwrap_or(0)
+}
+
+fn flow_done(settings: &Settings, step: usize) -> bool {
+    completed(settings, step) || (flow_index(step) < 6 && settings.lab.receipt.is_some())
+}
+
+fn flow_arrow(ui: &Ui, from: egui::Pos2, to: egui::Pos2, color: egui::Color32) {
+    let axis = (to - from).normalized();
+    let across = egui::vec2(-axis.y, axis.x);
+    let end = to - axis * 10.0;
+    let start = from + axis * 10.0;
+    if (end - start).dot(axis) < 2.0 {
+        return;
+    }
+    let stroke = egui::Stroke::new(1.25, color);
+    ui.painter().line_segment([start, end], stroke);
+    let tail = end - axis * 3.0;
+    ui.painter().line_segment([tail + across * 2.0, end], stroke);
+    ui.painter().line_segment([end, tail - across * 2.0], stroke);
+}
+
+fn flow_node(ui: &mut Ui, settings: &mut Settings, index: usize, size: egui::Vec2, vertical: bool, previous: Option<egui::Pos2>) -> egui::Pos2 {
+    let (id, name) = PREPRESS_FLOW[index];
+    let active = settings.lab.step == id;
+    let done = flow_done(settings, id);
+    let enabled = embedded_step_allowed(settings, id);
+    let status = if active {
         "Actual"
-    } else if completed(settings, i) {
+    } else if done {
         "Listo"
-    } else if embedded_step_allowed(settings, i) {
+    } else if enabled {
         "Disponible"
     } else {
         "Pendiente"
     };
-    format!("{}. {name} · {status}", i + 1)
+    let label = format!("{}. {name} · {status}", index + 1);
+    let (rect, response) = ui.add_enabled_ui(enabled, |ui| ui.allocate_exact_size(size, egui::Sense::click())).inner;
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &label));
+    if response.clicked() {
+        settings.lab.step = id;
+    }
+    let tokens = Tokens::get(ui.ctx());
+    let center = if vertical { egui::pos2(rect.left() + 13.0, rect.center().y) } else { rect.center() };
+    if let Some(previous) = previous {
+        flow_arrow(ui, previous, center, tokens.text_dim);
+    }
+    let painter = ui.painter();
+    if active && vertical {
+        painter.rect_filled(egui::Rect::from_min_max(rect.min + egui::vec2(26.0, 0.0), rect.max), 3.0, tokens.accent_strong);
+    } else if response.hovered() && enabled {
+        painter.rect_filled(rect, 3.0, ui.visuals().widgets.hovered.bg_fill);
+    }
+    if response.has_focus() {
+        painter.rect_stroke(rect.shrink(1.0), 4.0, egui::Stroke::new(1.5, tokens.text), egui::StrokeKind::Inside);
+    }
+    if active || done {
+        painter.circle_filled(center, 9.5, tokens.accent_strong);
+        if active {
+            painter.circle_stroke(center, 10.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+        }
+    } else {
+        painter.circle_stroke(center, 9.0, egui::Stroke::new(1.0, tokens.text_dim));
+    }
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    painter.text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        (index + 1).to_string(),
+        font.clone(),
+        if active || done { egui::Color32::WHITE } else { tokens.text },
+    );
+    if vertical {
+        let color = if active { egui::Color32::WHITE } else { tokens.text };
+        painter.text(egui::pos2(rect.left() + 34.0, center.y), egui::Align2::LEFT_CENTER, name, font.clone(), color);
+        painter.text(
+            egui::pos2(rect.right() - 7.0, center.y),
+            egui::Align2::RIGHT_CENTER,
+            status,
+            egui::TextStyle::Small.resolve(ui.style()),
+            if active { color } else { tokens.text_dim },
+        );
+    }
+    response.on_hover_text(label);
+    center
 }
 
 fn embedded_steps(ui: &mut Ui, settings: &mut Settings) {
-    if ui.available_height() >= 450.0 {
-        ui.scope(|ui| {
-            ui.spacing_mut().item_spacing.y = 3.0;
-            for (i, name) in STEPS.iter().enumerate() {
-                let button = crate::prepress::mode_button(ui, embedded_step_label(settings, i, name), settings.lab.step == i)
-                    .min_size(egui::vec2(ui.available_width(), 24.0))
-                    .wrap();
-                if ui.add_enabled(embedded_step_allowed(settings, i), button).clicked() {
-                    settings.lab.step = i;
-                }
+    let vertical = ui.available_height() >= 490.0 && ui.available_width() >= 220.0;
+    ui.scope(|ui| {
+        let mut previous = None;
+        if vertical {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            let width = ui.available_width();
+            for i in 0..PREPRESS_FLOW.len() {
+                previous = Some(flow_node(ui, settings, i, egui::vec2(width, 24.0), true, previous));
             }
-        });
-        return;
-    }
-    let step = settings.lab.step;
-    egui::ComboBox::from_id_salt("trapping-stage")
-        .selected_text(format!("{} de {} · {}", step + 1, STEPS.len(), STEPS.get(step).unwrap_or(&STEPS[0])))
-        .width((ui.available_width() - 8.0).clamp(80.0, 360.0))
-        .show_ui(ui, |ui| {
-            for (i, name) in STEPS.iter().enumerate() {
-                if ui
-                    .add_enabled(
-                        embedded_step_allowed(settings, i),
-                        crate::prepress::mode_button(ui, embedded_step_label(settings, i, name), step == i),
-                    )
-                    .clicked()
-                {
-                    settings.lab.step = i;
-                }
+        } else {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let columns = if ui.available_width() >= 218.0 { 8 } else { 4 };
+            let width = ((ui.available_width() - (columns - 1) as f32 * 4.0) / columns as f32).clamp(21.0, 29.0);
+            for row in (0..PREPRESS_FLOW.len()).step_by(columns) {
+                ui.horizontal(|ui| {
+                    for i in row..(row + columns).min(PREPRESS_FLOW.len()) {
+                        previous = Some(flow_node(ui, settings, i, egui::vec2(width, 26.0), false, previous));
+                    }
+                    previous = None;
+                });
             }
-        });
+            let index = flow_index(settings.lab.step);
+            ui.strong(format!("Paso {} de 8 · {}", index + 1, PREPRESS_FLOW[index].1));
+        }
+    });
 }
 
 /// Same staged trapping review in a dock, alongside the document canvas.
@@ -340,20 +434,20 @@ pub(crate) fn show_embedded(app: &mut VectorcraftApp, ui: &mut Ui) {
         return;
     }
     let mut settings = app.ui.trapping.clone();
-    refresh(app, ui, &mut settings);
+    refresh(app, ui, &mut settings, true);
     ui.add_space(6.0);
     embedded_steps(ui, &mut settings);
     widgets::divider(ui);
     let available = ui.available_height();
     let pin = available > 280.0;
-    let footer_room = if pair(&settings).is_some() && (1..=4).contains(&settings.lab.step) { 148.0 } else { 84.0 };
+    let footer_room = if pair(&settings).is_some() && decision_stage(settings.lab.step) { 148.0 } else { 84.0 };
     let height = if pin { (available - footer_room).min(480.0) } else { available.max(150.0) };
     egui::ScrollArea::vertical()
         .id_salt(("prepress-stage-content", settings.lab.step))
         .max_height(if pin { height } else { available })
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            stage_content(app, ui, &mut settings, height);
+            stage_content(app, ui, &mut settings, height, true);
             if settings.failed || (settings.lab.step == 5 && settings.export_failed) {
                 ui.strong("No se pudo completar");
             }
@@ -376,7 +470,7 @@ pub(crate) fn show_embedded(app: &mut VectorcraftApp, ui: &mut Ui) {
 }
 
 fn show_contents(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings) {
-    refresh(app, ui, settings);
+    refresh(app, ui, settings, false);
     for style in [egui::TextStyle::Body, egui::TextStyle::Button] {
         if let Some(font) = ui.style_mut().text_styles.get_mut(&style) {
             font.size = font.size.max(14.0);
@@ -455,7 +549,7 @@ fn show_contents(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings)
                     ui.label("Abre tu archivo desde Archivo > Abrir. Esta ventana permanecerá disponible.");
                     return;
                 }
-                stage_content(app, ui, settings, body_height);
+                stage_content(app, ui, settings, body_height, false);
             });
         });
     });
@@ -481,7 +575,7 @@ fn show_contents(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings)
     footer(app, ui, settings, false);
 }
 
-fn stage_content(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, height: f32) {
+fn stage_content(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, height: f32, docked: bool) {
     match settings.lab.step {
         0 => {
             ui.label("Calcula el mapa de encuentros visibles. No necesitas seleccionar todo el trabajo.");
@@ -525,19 +619,29 @@ fn stage_content(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings,
             }
             boundary_map(app, ui, settings, (height - 155.0).max(100.0), false);
         }
+        ADJUST => {
+            context(ui, settings);
+            ui.label("Define el ancho de la franja y hacia qué tinta se extenderá.");
+            adjust_controls(ui, settings);
+            direction(ui, settings);
+        }
+        EXPORT_PDF => {
+            if settings.lab.receipt.is_some() {
+                ui.strong("La franja incorporada irá en la copia del PDF.");
+            }
+            ui.label("Abre los ajustes de exportación y guarda una copia del documento actual.");
+            ui.label("Revisa las separaciones de salida antes de usarla en producción.");
+        }
         3 => {
             context(ui, settings);
             let compact = ui.available_width() < 760.0;
             if compact && preview_current(settings) {
                 preview_image(ui, settings, (height - 90.0).clamp(100.0, 220.0), true);
             }
-            let before = (settings.preview_width_mm, settings.preview_reverse);
-            ui.horizontal_wrapped(|ui| {
-                number(ui, "Ancho", &mut settings.preview_width_mm, 0.01..=0.5, " mm");
-                ui.checkbox(&mut settings.preview_reverse, "Invertir origen y receptor");
-            });
-            if before != (settings.preview_width_mm, settings.preview_reverse) {
-                settings.preview = None;
+            if docked {
+                ui.label(format!("Ancho: {:.2} mm · Edita el ancho y el sentido en el paso 4.", settings.preview_width_mm));
+            } else {
+                adjust_controls(ui, settings);
             }
             direction(ui, settings);
             if preview_current(settings) {
@@ -585,6 +689,9 @@ fn stage_content(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings,
             ui.label("Exporta el diagnóstico para revisar ajustes, tintas, par y resultados vigentes. También puedes hacerlo después de un error.");
             ui.label("Este JSON no reemplaza el archivo original ni contiene sus imágenes o todos sus contornos.");
             ui.add_space(12.0);
+            if docked && ui.button("Continuar a exportar PDF").clicked() {
+                settings.lab.step = EXPORT_PDF;
+            }
             if ui.button("Volver a Detectar").clicked() {
                 settings.lab.step = 0;
             }
@@ -595,6 +702,20 @@ fn stage_content(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings,
             }
         }
         _ => {}
+    }
+}
+
+fn adjust_controls(ui: &mut Ui, settings: &mut Settings) {
+    let before = (settings.preview_width_mm, settings.preview_reverse);
+    ui.horizontal_wrapped(|ui| {
+        number(ui, "Ancho", &mut settings.preview_width_mm, 0.01..=0.5, " mm");
+        ui.checkbox(&mut settings.preview_reverse, "Invertir origen y receptor");
+    });
+    if before != (settings.preview_width_mm, settings.preview_reverse) {
+        settings.preview = None;
+    }
+    if settings.preview.is_none() && settings.lab.step == ADJUST && before != (settings.preview_width_mm, settings.preview_reverse) {
+        settings.lab.adjusted = None;
     }
 }
 
@@ -806,7 +927,7 @@ fn boundary_map(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, 
 fn preview_image(ui: &mut Ui, settings: &mut Settings, height: f32, compact: bool) {
     let Some(preview) = settings.preview.clone() else { return };
     if compact {
-        ui.label("Desplázate abajo para ajustar ancho, sentido y ampliación.");
+        ui.label("Desplázate abajo para ver los controles de la franja.");
     } else {
         preview_controls(ui, settings);
     }
@@ -839,12 +960,16 @@ fn preview_controls(ui: &mut Ui, settings: &mut Settings) {
     });
 }
 
+fn decision_stage(step: usize) -> bool {
+    matches!(step, 1..=4 | ADJUST)
+}
+
 fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, docked: bool) {
     let stage = settings.lab.step;
     let checked = curves_current(settings);
     let visible = settings.curves.as_ref().is_some_and(|c| c.report["visibleSamples"].as_u64().unwrap_or(0) > 0);
-    let is_omitted = (1..=4).contains(&stage) && current_omitted(settings);
-    if pair(settings).is_some() && (1..=4).contains(&stage) {
+    let is_omitted = decision_stage(stage) && current_omitted(settings);
+    if pair(settings).is_some() && decision_stage(stage) {
         ui.horizontal_wrapped(|ui| {
             let label = if is_omitted { "Volver a evaluar" } else { "Omitir trapping" };
             if ui.add(egui::Button::new(label).min_size(egui::vec2(140.0, 30.0))).clicked() {
@@ -857,7 +982,10 @@ fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, docked
         _ if is_omitted => "Revisar otro par",
         0 => "Detectar fronteras",
         1 => "Continuar a verificar curvas",
+        2 if checked && visible && docked => "Continuar a ajustar",
         2 if checked && visible => "Continuar a previsualizar",
+        ADJUST => "Continuar a previsualizar",
+        EXPORT_PDF => "Abrir exportación PDF…",
         2 => "Verificar curvas",
         3 if preview_current(settings) => "Continuar a incorporar",
         3 => "Previsualizar franja",
@@ -876,7 +1004,11 @@ fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, docked
             egui::Button::new(label)
         };
         action = ui.add_enabled(enabled, button.wrap().min_size(egui::vec2(width, 32.0))).clicked();
-        let previous = (0..stage).rev().find(|&i| if docked { embedded_step_allowed(settings, i) } else { allowed(settings, i) });
+        let previous = if docked {
+            PREPRESS_FLOW.iter().take(flow_index(stage)).rev().map(|&(id, _)| id).find(|&id| embedded_step_allowed(settings, id))
+        } else {
+            (0..stage).rev().find(|&i| allowed(settings, i))
+        };
         if ui.add_enabled(previous.is_some(), egui::Button::new("Anterior")).clicked()
             && let Some(previous) = previous
         {
@@ -909,7 +1041,17 @@ fn footer(app: &mut VectorcraftApp, ui: &mut Ui, settings: &mut Settings, docked
             }
         }
         1 => settings.lab.step = 2,
-        2 if checked && visible => settings.lab.step = 3,
+        2 if checked && visible => settings.lab.step = if docked { ADJUST } else { 3 },
+        ADJUST => {
+            settings.lab.adjusted = settings.curves.as_ref().map(Arc::downgrade);
+            settings.lab.step = 3;
+        }
+        EXPORT_PDF => {
+            if let Err(e) = app.run("prepress.exportPdf", json!({})) {
+                settings.failed = true;
+                settings.message = e;
+            }
+        }
         2 => {
             if let (Some(c), Some(z), Some(p)) = (settings.boundaries.clone(), settings.boundary_selected, settings.lab.pair) {
                 verify_pair(app, settings, &c, z, p, true);
@@ -965,6 +1107,7 @@ fn omission_reports(settings: &Settings) -> Vec<Value> {
 }
 pub(super) fn diagnostic_state(app: &VectorcraftApp, settings: &Settings, current: bool) -> Value {
     json!({"open":settings.development_window,"step":settings.lab.step+1,
+        "displayStep":if app.ui.prepress.open {flow_index(settings.lab.step)+1}else{settings.lab.step+1},
         "selectedZone":current.then_some(settings.boundary_selected.map(|i|i+1)).flatten(),
         "selectedPair":current.then_some(settings.lab.pair.map(|i|i+1)).flatten(),
         "ids":if current {pair(settings).map(|p|p["ids"].clone())}else{None},

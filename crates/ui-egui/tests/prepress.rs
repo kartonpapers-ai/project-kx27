@@ -131,12 +131,12 @@ fn prepress_guides_detection_and_downloads_the_diagnostic() {
     h.run_steps(5);
     h.get_by_label("1. Detectar · Actual");
     h.get_by_label("3. Verificar curvas · Pendiente");
-    h.get_by_label("5. Incorporar · Pendiente");
+    h.get_by_label("6. Incorporar · Pendiente");
     h.get_by_label("Detectar fronteras").click();
     h.run_steps(5);
     h.get_by_label("1. Detectar · Listo");
     h.get_by_label("2. Zona y par · Actual");
-    h.get_by_label("6. Diagnóstico · Disponible").click();
+    h.get_by_label("7. Diagnóstico · Disponible").click();
     h.run_steps(4);
     h.get_by_label("Descargar diagnóstico (.json)").click();
     h.run_steps(4);
@@ -146,6 +146,7 @@ fn prepress_guides_detection_and_downloads_the_diagnostic() {
     let report: Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(report["format"], "kx27-trapping-diagnostic");
     assert_eq!(report["settings"]["development"]["step"], 6);
+    assert_eq!(report["settings"]["development"]["displayStep"], 7);
     assert!(report["analyses"]["boundaries"]["report"].is_object());
     assert_eq!(report["imageBytesIncluded"], false);
     assert!(Arc::ptr_eq(&before, &h.state().session.doc().unwrap().doc));
@@ -155,11 +156,46 @@ fn prepress_guides_detection_and_downloads_the_diagnostic() {
 }
 
 #[test]
+fn prepress_runs_the_eight_steps_and_opens_pdf_export_from_the_last_node() {
+    use egui_kittest::kittest::Queryable;
+    let app = fixture();
+    let mut h = Harness::builder().with_size(egui::vec2(1200., 760.)).build_ui_state(|ui, app| frame(app, ui), app);
+    h.run_steps(5);
+    let click = |h: &mut Harness<'_, VectorcraftApp>, label: &str| {
+        h.get_by_label(label).click();
+        h.run_steps(4);
+    };
+    click(&mut h, "Detectar fronteras");
+    click(&mut h, "Zona");
+    h.get_by_label_contains("Zona 1 ·").click();
+    h.run_steps(4);
+    click(&mut h, "Continuar a verificar curvas");
+    click(&mut h, "Verificar curvas");
+    click(&mut h, "Continuar a ajustar");
+    h.get_by_label("4. Ajustar franja · Actual");
+    h.get_by_label("Invertir origen y receptor");
+    click(&mut h, "Continuar a previsualizar");
+    h.get_by_label("4. Ajustar franja · Listo");
+    h.get_by_label("5. Previsualizar · Actual");
+    click(&mut h, "Previsualizar franja");
+    click(&mut h, "Continuar a incorporar");
+    h.get_by_label("6. Incorporar · Actual");
+    click(&mut h, "Incorporar esta franja");
+    h.get_by_label("7. Diagnóstico · Actual");
+    h.get_by_label("6. Incorporar · Listo");
+    h.get_by_label("Franja local incorporada");
+    click(&mut h, "Continuar a exportar PDF");
+    h.get_by_label("8. Exportar PDF · Actual");
+    click(&mut h, "Abrir exportación PDF…");
+    assert!(h.state().ui.dialog.is_some(), "the final node must open PDF export settings");
+}
+
+#[test]
 #[ignore = "requires a graphics adapter; optional visual check"]
 fn captures_prepress_workspace() {
     use egui_kittest::kittest::Queryable;
     let dir = std::env::var("KX27_PREPRESS_SHOTS").unwrap();
-    for (w, h) in [(1280., 800.), (820., 640.)] {
+    for (w, h) in [(1280., 800.), (820., 520.)] {
         let mut test = Harness::builder().with_size(egui::vec2(w, h)).wgpu().build_ui_state(|ui, app| frame(app, ui), fixture());
         test.run_steps(5);
         if w < 920. {
@@ -187,7 +223,7 @@ fn captures_prepress_workspace() {
             test.get_by_label("Trapping").click();
             test.run_steps(4);
         }
-        test.get_by_label("6. Diagnóstico · Disponible").click();
+        test.get_by_label("7. Diagnóstico · Disponible").click();
         test.run_steps(4);
         test.get_by_label("Descargar diagnóstico (.json)");
         test.render().unwrap().save(std::path::Path::new(&dir).join(format!("prepress-{w}-diagnostic.png"))).unwrap();
